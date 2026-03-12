@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 import base64
 
-# 【修正】移除手动的 sys.path 修改，依赖 CI 环境的 PYTHONPATH 设置
-# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')))
+# 将项目根目录添加到 sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')))
 
 from core.extraction.infrastructure.extractor import MediaExtractor
 

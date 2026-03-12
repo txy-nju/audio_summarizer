@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from io import BytesIO
 
-# 【修正】移除手动的 sys.path 修改
-# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', '..')))
+# 将项目根目录添加到 sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', '..')))
 
 from core.extraction.infrastructure.video.local_video_handler import LocalVideoHandler
 
