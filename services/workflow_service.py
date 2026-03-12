@@ -51,18 +51,6 @@ class VideoSummaryService:
         
         return transcript, frames
 
-    def extract_content_from_url(self, url: str) -> Tuple[str, list[str]]:
-        """
-        [仅供兼容] 从视频URL中提取文本和关键帧。
-        建议使用 process_video_from_url 替代。
-        """
-        # 1. 下载视频
-        print(f"Downloading video from {url}...")
-        video_path = self.downloader.download(url)
-        print(f"Video downloaded to {video_path}")
-
-        return self._extract_and_transcribe(video_path)
-
     def process_video_from_url(self, url: str) -> str:
         """
         针对 URL 的完整流程：下载 -> 提取 -> 分析。
