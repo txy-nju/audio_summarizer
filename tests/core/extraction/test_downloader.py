@@ -10,7 +10,7 @@ import os
 # 这对于在命令行中直接运行测试脚本是必要的
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
-from core.extraction.downloader import VideoDownloader
+from core.extraction.video.downloader import VideoDownloader
 
 class TestVideoDownloader(unittest.TestCase):
 
@@ -27,7 +27,7 @@ class TestVideoDownloader(unittest.TestCase):
         if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
 
-    @patch('core.extraction.downloader.yt_dlp.YoutubeDL')
+    @patch('core.extraction.video.downloader.yt_dlp.YoutubeDL')
     def test_download_success(self, mock_youtube_dl):
         """测试视频下载成功的情况"""
         # --- 准备模拟 ---
@@ -68,7 +68,8 @@ class TestVideoDownloader(unittest.TestCase):
 
         # 验证 ydl_opts 中的配置
         self.assertIn('format', ydl_opts)
-        self.assertEqual(ydl_opts['format'], 'best[ext=mp4]')
+        # 更新为新的格式字符串
+        self.assertEqual(ydl_opts['format'], 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best')
         self.assertIn('outtmpl', ydl_opts)
         # 验证 outtmpl 是否包含我们的临时目录路径
         # 注意：outtmpl 是一个字符串，我们检查它是否包含目录路径

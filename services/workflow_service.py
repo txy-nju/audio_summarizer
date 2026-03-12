@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Tuple
 
-from core.extraction.downloader import VideoDownloader
+from core.extraction.video.downloader import VideoDownloader
 from core.extraction.extractor import MediaExtractor
 from core.extraction.transcriber import AudioTranscriber
 from core.analysis.analyzer import ContentAnalyzer
