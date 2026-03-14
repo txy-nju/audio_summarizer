@@ -13,13 +13,16 @@ def check_api():
     # 1. Load environment variables from .env file
     print("Loading environment variables from .env file...")
     
-    # 强制覆盖系统环境变量，确保使用的是当前目录下的 .env 文件内容
-    env_path = Path('.') / '.env'
+    # 强制覆盖系统环境变量，确保使用的是项目根目录下的 .env 文件内容
+    # 由于该文件现在位于 scripts/ 目录下，向上退一级即可到达项目根目录
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / '.env'
+    
     if env_path.exists():
         print(f"Found .env file at {env_path.absolute()}")
         load_dotenv(dotenv_path=env_path, override=True)
     else:
-        print("[WARNING] .env file not found in current directory. Falling back to system environment variables.")
+        print(f"[WARNING] .env file not found at {env_path.absolute()}. Falling back to system environment variables.")
         load_dotenv()
     
     api_key = os.getenv("OPENAI_API_KEY")
