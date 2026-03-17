@@ -1,6 +1,5 @@
-
 from abc import ABC, abstractmethod
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from pathlib import Path
 
 from config.settings import DEFAULT_FRAME_INTERVAL
@@ -30,7 +29,7 @@ class VideoSource(ABC):
         """
         pass
 
-    def process(self) -> Tuple[str, List[str]]:
+    def process(self) -> Tuple[str, List[Dict]]:
         """
         模板方法：执行标准的视频处理流程。
         1. 获取视频 (acquire_video)
@@ -38,7 +37,7 @@ class VideoSource(ABC):
         3. 转录音频 (self.transcriber)
             
         Returns:
-            Tuple[str, List[str]]: (转录文本, 关键帧列表)
+            Tuple[str, List[Dict]]: (转录文本, 包含时间戳与 base64 图像的关键帧字典列表)
         """
         # 1. 获取视频路径
         video_path = self.acquire_video()

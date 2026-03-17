@@ -4,6 +4,8 @@ opencv-python
 moviepy
 openai
 google-generativeai
+anthropic
 tenacity
 python-dotenv
 ffmpeg-python
+langgraph

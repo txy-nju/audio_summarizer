@@ -1,4 +1,3 @@
-
 import cv2
 import base64
 from pathlib import Path
@@ -19,9 +18,10 @@ class MediaExtractor:
             video.audio.write_audiofile(str(audio_path), codec='mp3', logger=None)
         return audio_path
 
-    def extract_frames(self, video_path: Path, interval: int) -> list[str]:
+    def extract_frames(self, video_path: Path, interval: int) -> list[dict]:
         """
-        从视频中提取关键帧，并返回Base64编码的图片列表
+        从视频中提取关键帧，并返回包含时间戳和Base64编码的图片字典列表。
+        符合 VideoSummaryState 的契约格式：[{"time": "00:15", "image": "base64_str"}]
         """
         vidcap = cv2.VideoCapture(str(video_path))
         if not vidcap.isOpened():
@@ -55,7 +55,16 @@ class MediaExtractor:
                 # 编码为Base64
                 _, buffer = cv2.imencode('.jpg', image)
                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
-                frames.append(jpg_as_text)
+                
+                # 计算时间戳并格式化为 MM:SS
+                time_in_seconds = frame_count / fps
+                m, s = divmod(int(time_in_seconds), 60)
+                time_str = f"{m:02d}:{s:02d}"
+                
+                frames.append({
+                    "time": time_str,
+                    "image": jpg_as_text
+                })
             frame_count += 1
         
         vidcap.release()
