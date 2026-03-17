@@ -1,4 +1,3 @@
-
 import os
 from typing import IO
 
@@ -6,9 +5,8 @@ from typing import IO
 from core.extraction.base import VideoSource
 from core.extraction.sources import UrlVideoSource, LocalFileVideoSource
 
-# 不再需要导入 extractor 和 transcriber
-from core.analysis.analyzer import ContentAnalyzer
-from core.generation.report_generator import ReportGenerator
+# 【核心改造】引入新的工作流接口，不再需要旧的 analysis 和 generation
+from core.workflow import summarize_video
 from utils.file_utils import clear_temp_folder
 
 class VideoSummaryService:
@@ -17,16 +15,14 @@ class VideoSummaryService:
         self.base_url = os.getenv("OPENAI_BASE_URL")
         self.api_key = api_key
         
-        # 核心组件初始化
-        # 注意：现在只剩下 analyzer 和 generator
-        self.analyzer = ContentAnalyzer(api_key, base_url=self.base_url)
-        self.generator = ReportGenerator()
+        # 【核心改造】不再需要初始化 analyzer 和 generator
+        # 核心组件的初始化现在由 langgraph 内部管理
 
     def _process_source(self, source: VideoSource) -> str:
         """
         统一的内部处理逻辑：
         1. 使用 VideoSource 获取内容 (Transcript + Frames)
-        2. 使用 Analyzer 分析内容
+        2. 调用新的工作流进行分析和总结
         """
         # 在开始前清理临时文件夹
         clear_temp_folder()
@@ -35,10 +31,14 @@ class VideoSummaryService:
             # 1. 获取内容 (VideoSource 现在是完全独立的)
             transcript, frames = source.process()
 
-            # 2. 分析
-            print("Analyzing content...")
-            summary = self.analyzer.analyze(transcript, frames)
-            print("Analysis complete.")
+            # 2. 【核心改造】调用新的、符合架构的 summarize_video 函数
+            print("Invoking AI workflow...")
+            summary = summarize_video(
+                transcript=transcript,
+                keyframes=frames
+                # user_prompt 可以在这里传入，或使用默认值
+            )
+            print("Workflow complete.")
             
             return summary
         finally:
