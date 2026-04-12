@@ -1,26 +1,36 @@
 from typing import Literal
 from core.workflow.video_summary.state import VideoSummaryState
 
-def route_after_review(state: VideoSummaryState) -> Literal["Approve", "Needs Revision", "Max Loops Reached"]:
+def route_after_hallucination(state: VideoSummaryState) -> Literal["Has Hallucination", "No Hallucination"]:
     """
-    条件路由函数：根据反思节点的 critique 和当前的 revision_count 决定工作流的下一步走向。
-    
-    - "Approve": 无明显遗漏且逻辑自洽（无 critique 或表示通过），流向 END
-    - "Needs Revision": 发现图文融合生硬或有遗漏（有 critique）且循环未满 2 次，流回 fusion_drafter_node
-    - "Max Loops Reached": 循环达到或超过 2 次，强制终止并输出当前最佳版本至 END
+    [Self-RAG 第一道防线路由]：
+    根据幻觉评分器 (hallucination_grader) 的输出决定流向。
+    若存在幻觉 -> 回流起草节点重写 (Needs Revision)。
+    若无幻觉 -> 流向下一道防线：有用性评分器。
     
     :param state: VideoSummaryState
-    :return: 下一节点的路由指令
+    :return: 下一步路由指令
     """
-    revision_count = state.get("revision_count", 0)
-    critique = state.get("critique", "")
-
-    # 判断是否通过
-    if not critique or critique.strip() == "":
-        return "Approve"
+    score = state.get("hallucination_score", "no").lower()
     
-    # 未通过则判断循环次数
-    if revision_count < 2:
-        return "Needs Revision"
+    if score == "yes":
+        return "Has Hallucination"
     else:
-        return "Max Loops Reached"
+        return "No Hallucination"
+
+def route_after_usefulness(state: VideoSummaryState) -> Literal["Not Useful", "Useful"]:
+    """
+    [Self-RAG 第二道防线路由]：
+    根据有用性评分器 (usefulness_grader) 的输出决定流向。
+    若偏离需求 -> 回流起草节点重写 (Needs Revision)。
+    若满足需求 -> 大功告成，流向终点 END。
+    
+    :param state: VideoSummaryState
+    :return: 下一步路由指令
+    """
+    score = state.get("usefulness_score", "yes").lower()
+    
+    if score == "no":
+        return "Not Useful"
+    else:
+        return "Useful"
