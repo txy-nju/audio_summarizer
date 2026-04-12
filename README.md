@@ -184,6 +184,7 @@ OPENAI_API_KEY=sk-xxxx
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL_NAME=gpt-4o
 OPENAI_VISION_MODEL_NAME=gpt-4o
+TRANSCRIBER_MODEL=whisper-1
 TAVILY_API_KEY=tvly-xxxx
 
 # Checkpoint 配置
@@ -197,6 +198,7 @@ CHECKPOINT_BACKEND=memory
 - OPENAI_BASE_URL：可选，兼容 OpenAI 协议的中转地址
 - OPENAI_MODEL_NAME：文本模型名，默认 gpt-4o
 - OPENAI_VISION_MODEL_NAME：视觉分析模型名，默认回退到 OPENAI_MODEL_NAME
+- TRANSCRIBER_MODEL：语音转文本模型名，默认 whisper-1（支持任何兼容 OpenAI API 的语音转录模型）
 - TAVILY_API_KEY：可选，主动搜索工具使用
 - CHECKPOINT_BACKEND：默认 memory，当前代码已预留 postgres 分支
 - CHECKPOINT_DB_URL：当 CHECKPOINT_BACKEND=postgres 时需要提供
