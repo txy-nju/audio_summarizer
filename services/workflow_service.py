@@ -7,11 +7,13 @@ from core.extraction.sources import UrlVideoSource, LocalFileVideoSource
 
 # 【核心改造】引入新的工作流接口，不再需要旧的 analysis 和 generation
 from core.workflow import summarize_video
+from core.workflow.session import ensure_thread_id
 from utils.file_utils import clear_temp_folder
 
 class VideoSummaryService:
     def __init__(self, api_key: str, base_url: str = None):
         self.api_key = api_key
+        self.last_thread_id = ""
         # 优先使用前端传入的 base_url，如果为空则尝试读取环境变量，最后回退到官方默认地址
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         
@@ -27,7 +29,13 @@ class VideoSummaryService:
             
         # 核心组件的初始化现在由 langgraph 内部管理
 
-    def _process_source(self, source: VideoSource, user_prompt: str = "", status_callback: Optional[Callable[[str], None]] = None) -> str:
+    def _process_source(
+        self,
+        source: VideoSource,
+        user_prompt: str = "",
+        status_callback: Optional[Callable[[str], None]] = None,
+        thread_id: str = ""
+    ) -> str:
         """
         统一的内部处理逻辑：
         1. 使用 VideoSource 获取内容 (Transcript + Frames)
@@ -49,11 +57,15 @@ class VideoSummaryService:
                 user_prompt = "请结合画面与语音，给出一个全面、客观的高质量视频总结。"
                 
             # [前端透传] 将 UI 回调函数挂载进 LangGraph 执行总线上
+            resolved_thread_id = ensure_thread_id(thread_id)
+            self.last_thread_id = resolved_thread_id
+
             summary = summarize_video(
                 transcript=transcript,
                 keyframes=frames,
                 user_prompt=user_prompt,
-                status_callback=status_callback
+                status_callback=status_callback,
+                thread_id=resolved_thread_id
             )
             
             if status_callback:
@@ -66,7 +78,13 @@ class VideoSummaryService:
             # 在结束后清理，确保不留垃圾文件
             clear_temp_folder()
 
-    def process_video_from_url(self, url: str, user_prompt: str = "", status_callback: Optional[Callable[[str], None]] = None) -> str:
+    def process_video_from_url(
+        self,
+        url: str,
+        user_prompt: str = "",
+        status_callback: Optional[Callable[[str], None]] = None,
+        thread_id: str = ""
+    ) -> str:
         """
         针对 URL 的完整流程。
         """
@@ -76,9 +94,21 @@ class VideoSummaryService:
         
         # 创建 Source 实例时传入必要的配置
         source = UrlVideoSource(url, api_key=self.api_key, base_url=self.base_url)
-        return self._process_source(source, user_prompt=user_prompt, status_callback=status_callback)
+        return self._process_source(
+            source,
+            user_prompt=user_prompt,
+            status_callback=status_callback,
+            thread_id=thread_id
+        )
 
-    def process_uploaded_video(self, uploaded_file: IO[bytes], original_filename: str, user_prompt: str = "", status_callback: Optional[Callable[[str], None]] = None) -> str:
+    def process_uploaded_video(
+        self,
+        uploaded_file: IO[bytes],
+        original_filename: str,
+        user_prompt: str = "",
+        status_callback: Optional[Callable[[str], None]] = None,
+        thread_id: str = ""
+    ) -> str:
         """
         针对上传文件的完整流程。
         """
@@ -92,4 +122,9 @@ class VideoSummaryService:
             api_key=self.api_key, 
             base_url=self.base_url
         )
-        return self._process_source(source, user_prompt=user_prompt, status_callback=status_callback)
+        return self._process_source(
+            source,
+            user_prompt=user_prompt,
+            status_callback=status_callback,
+            thread_id=thread_id
+        )

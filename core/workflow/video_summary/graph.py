@@ -19,7 +19,7 @@ from core.workflow.video_summary.edges.router import (
     ROUTE_USEFUL
 )
 
-def build_video_summary_graph() -> Any:
+def build_video_summary_graph(checkpointer: Any = None) -> Any:
     """
     基于 《多模态视频内容总结 AI 工作流架构设计书》 升级构建的 LangGraph 执行拓扑。
     彻底抛弃了脆弱的单线流转，正式升级为带有 Self-RAG 反思闭环的 Multi-Agent 架构。
@@ -71,4 +71,4 @@ def build_video_summary_graph() -> Any:
 
     # 4. 编译校验图实例并返回可执行工作流
     # compile() 返回的是 CompiledStateGraph，具有 .invoke 和 .stream 方法
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)

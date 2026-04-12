@@ -1,11 +1,15 @@
 from typing import List, Dict, Callable, Optional
 from core.workflow.video_summary.graph import build_video_summary_graph
+from core.workflow.checkpoint_factory import create_checkpointer
+from core.workflow.session import ensure_thread_id
+from config.settings import CHECKPOINT_BACKEND, CHECKPOINT_DB_URL
 
 def summarize_video(
     transcript: str, 
     keyframes: List[Dict], 
     user_prompt: str = "请结合画面与语音，给出一个全面、客观的高质量视频总结。",
-    status_callback: Optional[Callable[[str], None]] = None
+    status_callback: Optional[Callable[[str], None]] = None,
+    thread_id: str = ""
 ) -> str:
     """
     外部调用接口：启动多模态视频总结工作流。
@@ -21,8 +25,13 @@ def summarize_video(
     if status_callback:
         status_callback("⚙️ [LangGraph 初始化] 正在编排多智能体认知状态机网络...")
 
-    # 1. 获取已编译的工作流引擎
-    workflow_app = build_video_summary_graph()
+    # 1. 获取已编译的工作流引擎（第一阶段：接入 checkpointer）
+    checkpointer = create_checkpointer(CHECKPOINT_BACKEND, CHECKPOINT_DB_URL)
+    workflow_app = build_video_summary_graph(checkpointer=checkpointer)
+    resolved_thread_id = ensure_thread_id(thread_id)
+
+    if status_callback:
+        status_callback(f"🧵 [Session] 当前会话 thread_id: {resolved_thread_id}")
     
     # 2. 构造符合 VideoSummaryState 契约的初始状态
     initial_state = {
@@ -55,7 +64,11 @@ def summarize_video(
     current_state = initial_state.copy()
     
     # stream_mode="updates" 会在每一个图节点执行完毕后，将它吐出的局部更新 `dict` yield 出来
-    for output in workflow_app.stream(initial_state, stream_mode="updates"):
+    for output in workflow_app.stream(
+        initial_state,
+        {"configurable": {"thread_id": resolved_thread_id}},
+        stream_mode="updates"
+    ):
         for node_name, state_update in output.items():
             # 实时更新缓冲区状态
             current_state.update(state_update)

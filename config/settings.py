@@ -25,3 +25,7 @@ for dir_path in [TEMP_VIDEO_DIR, TEMP_AUDIO_DIR, TEMP_FRAMES_DIR]:
 # 默认配置
 DEFAULT_FRAME_INTERVAL = 2  # 默认每2秒抽一帧
 MAX_IMAGE_SIZE = 768        # 图片长边限制
+
+# Checkpoint 配置（5.2 第一阶段）
+CHECKPOINT_BACKEND = os.getenv("CHECKPOINT_BACKEND", "memory")
+CHECKPOINT_DB_URL = os.getenv("CHECKPOINT_DB_URL", "")
