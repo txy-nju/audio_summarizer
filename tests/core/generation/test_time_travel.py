@@ -10,7 +10,9 @@ from core.workflow.time_travel import (
 class TestTimeTravelUtils(unittest.TestCase):
     def test_parse_timestamp_to_seconds(self):
         self.assertEqual(parse_timestamp_to_seconds("00:15"), 15)
+        self.assertEqual(parse_timestamp_to_seconds("1:30"), 90)
         self.assertEqual(parse_timestamp_to_seconds("01:02:03"), 3723)
+        self.assertEqual(parse_timestamp_to_seconds("99:99"), 6039)
 
     def test_parse_timestamp_to_seconds_invalid(self):
         with self.assertRaises(ValueError):

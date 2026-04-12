@@ -11,6 +11,21 @@ from core.workflow.time_travel import (
 )
 from config.settings import CHECKPOINT_BACKEND, CHECKPOINT_DB_URL
 
+
+def _build_time_travel_fallback_response(
+    timestamp: str,
+    frame_time: str,
+    transcript_window: str,
+    reason: str,
+) -> str:
+    return (
+        "[系统降级回答]\n"
+        f"- 目标时间戳: {timestamp}\n"
+        f"- 最近关键帧: {frame_time}\n"
+        f"- 语音证据:\n{transcript_window}\n\n"
+        f"降级原因: {reason}"
+    )
+
 def summarize_video(
     transcript: str, 
     keyframes: List[Dict], 
@@ -160,12 +175,11 @@ def answer_question_at_timestamp(
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     if not api_key:
-        return (
-            "[系统降级回答]\n"
-            f"- 目标时间戳: {timestamp}\n"
-            f"- 最近关键帧: {frame_time}\n"
-            f"- 语音证据:\n{transcript_window}\n\n"
-            "未配置 OPENAI_API_KEY，当前返回的是证据抽取结果。"
+        return _build_time_travel_fallback_response(
+            timestamp=timestamp,
+            frame_time=frame_time,
+            transcript_window=transcript_window,
+            reason="未配置 OPENAI_API_KEY，当前返回的是证据抽取结果。",
         )
 
     client = OpenAI(api_key=api_key, base_url=base_url)
@@ -201,11 +215,21 @@ def answer_question_at_timestamp(
         {"role": "user", "content": user_content},
     ]
 
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=messages_payload,
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages_payload,
+            temperature=0.2,
+        )
+    except Exception as exc:
+        if status_callback:
+            status_callback(f"⚠️ [Time Travel] OpenAI 调用异常，已降级返回证据片段: {str(exc)}")
+        return _build_time_travel_fallback_response(
+            timestamp=timestamp,
+            frame_time=frame_time,
+            transcript_window=transcript_window,
+            reason=f"OpenAI API 调用异常: {str(exc)}",
+        )
 
     answer = response.choices[0].message.content
     return answer or "[系统提示] 已完成追问，但模型未返回文本内容。"

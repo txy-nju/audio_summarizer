@@ -44,6 +44,13 @@ class TestTimeTravelPipelineIntegration(unittest.TestCase):
                         window_seconds=10,
                     )
 
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs.get("messages", [])
+        self.assertTrue(messages, "LLM 调用的 messages 不应为空")
+        user_message_content = messages[-1]["content"][0]["text"]
+        self.assertIn("target evidence", user_message_content, "必须向大模型提供目标时间段的文本证据")
+        self.assertIn("这段在讲什么？", user_message_content, "必须向大模型传递用户的提问")
+        self.assertIn("00:10", user_message_content, "应当告知大模型当前追问的时间点")
         self.assertEqual(result, "这是追问回答")
 
     def test_answer_question_thread_not_found(self):
@@ -79,6 +86,33 @@ class TestTimeTravelPipelineIntegration(unittest.TestCase):
         self.assertIn("[系统降级回答]", result)
         self.assertIn("目标时间戳: 00:32", result)
         self.assertIn("语音证据", result)
+
+    def test_answer_question_api_timeout_fallback(self):
+        """集成路径：OpenAI API 异常/超时应当被捕获并降级返回"""
+        checkpoint = {
+            "channel_values": {
+                "transcript": '{"segments": [{"start": 30, "end": 35, "text": "window evidence"}]}',
+                "keyframes": [{"time": "00:33", "image": ""}],
+                "draft_summary": "历史草稿",
+                "user_prompt": "请简洁",
+            }
+        }
+
+        with patch("core.workflow.api.create_checkpointer", return_value=_FakeCheckpointer(checkpoint)):
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key"}, clear=False):
+                with patch("core.workflow.api.OpenAI") as mock_openai:
+                    mock_client = MagicMock()
+                    mock_client.chat.completions.create.side_effect = Exception("OpenAI API Timeout")
+                    mock_openai.return_value = mock_client
+
+                    result = answer_question_at_timestamp(
+                        thread_id="thread-timeout",
+                        timestamp="00:32",
+                        question="这个时间点的重点是什么？",
+                    )
+
+        self.assertIn("[系统降级回答]", result)
+        self.assertIn("OpenAI API 调用异常", result)
 
     def test_answer_question_invalid_arguments(self):
         """集成路径：非法参数应抛 ValueError，避免静默失败"""
