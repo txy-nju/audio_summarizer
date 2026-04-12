@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 sys.path.insert(0, str(project_root))
 
+from core.workflow.video_summary.state import VideoSummaryState
 from core.workflow.video_summary.nodes.text_analyzer import text_analyzer_node
 from core.workflow.video_summary.nodes.vision_analyzer import vision_analyzer_node
 from core.workflow.video_summary.nodes.fusion_drafter import fusion_drafter_node
@@ -24,12 +25,17 @@ class TestFusionDrafterNode(unittest.TestCase):
     
     def setUp(self):
         """准备单元测试用的虚假 State"""
-        self.valid_state = {
+        self.valid_state: VideoSummaryState = {
+            "transcript": "",
+            "keyframes": [],
             "text_insights": "核心观点：苹果发布了新款 iPhone。金句：这是迄今为止最伟大的产品。",
             "visual_insights": "[00:15] PPT上显示了 A17 芯片的性能提升 20%。\n[00:30] 演讲者展示了钛金属外壳。",
             "user_prompt": "侧重芯片性能",
+            "draft_summary": "",
             "revision_count": 0,
-            "critique": ""
+            "feedback_instructions": "",
+            "hallucination_score": "",
+            "usefulness_score": ""
         }
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123", "OPENAI_BASE_URL": "https://fake.url"})
@@ -51,21 +57,21 @@ class TestFusionDrafterNode(unittest.TestCase):
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123", "OPENAI_BASE_URL": "https://fake.url"})
     @patch('core.workflow.video_summary.nodes.fusion_drafter.OpenAI')
-    def test_fusion_drafter_mocked_with_critique(self, mock_openai_class):
-        """单元测试：存在 critique 时的回流重写逻辑，验证 System Prompt 的动态修改"""
+    def test_fusion_drafter_mocked_with_feedback(self, mock_openai_class):
+        """单元测试：存在 feedback_instructions 时的回流重写逻辑，验证 System Prompt 的动态修改"""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "修正版：添加了之前遗漏的关于钛金属的描述。"
         mock_client.chat.completions.create.return_value = mock_response
         
-        state_with_critique = self.valid_state.copy()
-        state_with_critique["revision_count"] = 1 # 假设已经是第1次重写失败，这是第2次尝试
-        state_with_critique["critique"] = "你忘记提到钛金属外壳了！请务必加上。"
+        state_with_feedback = self.valid_state.copy()
+        state_with_feedback["revision_count"] = 1 # 假设已经是第1次重写失败，这是第2次尝试
+        state_with_feedback["feedback_instructions"] = "你忘记提到钛金属外壳了！请务必加上。"
         
-        result = fusion_drafter_node(state_with_critique)
+        result = fusion_drafter_node(state_with_feedback)
         
-        # 验证提示词中是否成功注入了 critique 和重写次数
+        # 验证提示词中是否成功注入了 feedback 和重写次数
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         messages = call_kwargs.get("messages", [])
         system_msg = [msg["content"] for msg in messages if msg["role"] == "system"][0]
@@ -108,12 +114,17 @@ class TestFusionDrafterNode(unittest.TestCase):
                 keyframes.append({"time": time_str, "image": b64_data})
                 
         # 初始化符合架构的 State
-        state = {
+        state: VideoSummaryState = {
             "transcript": transcript,
             "keyframes": keyframes,
+            "text_insights": "",
+            "visual_insights": "",
+            "draft_summary": "",
             "user_prompt": "这是一次自动化的集成测试，请尽量简短地将画面和文字结合进行总结。",
             "revision_count": 0,
-            "critique": ""
+            "feedback_instructions": "",
+            "hallucination_score": "",
+            "usefulness_score": ""
         }
         
         # 1. 生成 Text Insights

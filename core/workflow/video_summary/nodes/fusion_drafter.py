@@ -6,7 +6,8 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
     """
     核心的“组装节点” (Synthesizer)。
     接收并汇聚来自并行层的 text_insights 和 visual_insights，根据时间戳或逻辑相关性进行“图文对齐”。
-    生成结构化的综合 draft_summary。如果存在 critique，则必须结合修改意见重新生成修正版草稿。
+    生成结构化的综合 draft_summary。
+    [Self-RAG 升级]: 如果存在反馈意见 (feedback_instructions)，则必须结合修改意见重新生成修正版草稿。
     
     :param state: VideoSummaryState
     :return: dict 包含更新的 draft_summary 和增加的 revision_count
@@ -15,7 +16,7 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
     text_insights = state.get("text_insights", "")
     visual_insights = state.get("visual_insights", "")
     user_prompt = state.get("user_prompt", "")
-    critique = state.get("critique", "")
+    feedback_instructions = state.get("feedback_instructions", "")
 
     # 1. 获取环境变量凭证
     api_key = os.getenv("OPENAI_API_KEY")
@@ -37,14 +38,14 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
         "3. 📝 专业排版规范：输出必须使用易于阅读的 Markdown 语法。建议包含：【内容导读】、【核心图文融合解析（按大纲展开）】、【关键金句摘录】、【总结与升华】等模块。"
     )
 
-    # 3. 反思机制 (Reflector Feedback) 介入
-    if critique and critique.strip():
+    # 3. [Self-RAG 升级] 双重评分机制介入
+    if feedback_instructions and feedback_instructions.strip():
         system_prompt += (
             f"\n\n⚠️ 【重要警告：这是第 {current_count + 1} 次重写草稿】\n"
-            "在上一版的草稿中，审查员 (Consistency Checker) 指出了以下幻觉、逻辑断层或重点遗漏。请务必在本次生成中着重修正并体现出来：\n"
-            f"====== 审查修改意见 (Critique) ======\n"
-            f"{critique}\n"
-            f"====================================="
+            "在上一版的草稿中，双重质量评分器 (Grader) 指出了以下的幻觉捏造或偏题问题。请务必在本次生成中严格遵照以下修改指令进行定点切除与修正：\n"
+            f"====== 强制修改指令 (Feedback Instructions) ======\n"
+            f"{feedback_instructions}\n"
+            f"=================================================="
         )
 
     # 4. 组装 User Content

@@ -22,7 +22,10 @@ def summarize_video(transcript: str, keyframes: List[Dict], user_prompt: str = "
         "text_insights": "",
         "visual_insights": "",
         "draft_summary": "",
-        "critique": "",
+        # [Self-RAG 升级] 初始化新增的质量控制字段
+        "hallucination_score": "",
+        "usefulness_score": "",
+        "feedback_instructions": "",
         "revision_count": 0
     }
     
