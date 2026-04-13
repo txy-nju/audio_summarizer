@@ -101,6 +101,75 @@ class TestChunkVisionAnalyzerNode(unittest.TestCase):
         mock_client.chat.completions.create.assert_called_once()
         mock_search.assert_called_once()
 
+    @patch.dict("core.workflow.video_summary.nodes.chunk_vision_analyzer._VISION_SEARCH_CACHE", {}, clear=True)
+    @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer.as_completed")
+    @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer.ThreadPoolExecutor")
+    @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer._process_single_chunk_vision")
+    def test_parallel_execution_reduces_runtime(self, mock_process, mock_executor_cls, mock_as_completed):
+        mock_process.side_effect = lambda chunk_id, frame_indexes, keyframes, user_prompt, base_item: (
+            chunk_id,
+            {
+                "chunk_id": chunk_id,
+                "vision_insights": f"vision-{chunk_id}",
+                "evidence_refs": {"keyframe_indexes": frame_indexes, "vision_searches": []},
+                "token_usage": {"vision": 0},
+                "latency_ms": {"vision": 1},
+            },
+        )
+
+        class _FakeFuture:
+            def __init__(self, value):
+                self._value = value
+
+            def result(self):
+                return self._value
+
+        submitted_futures = []
+        submitted_calls = []
+        executor_instance = MagicMock()
+
+        def _submit(fn, *args, **kwargs):
+            submitted_calls.append((fn, args, kwargs))
+            future = _FakeFuture(fn(*args, **kwargs))
+            submitted_futures.append(future)
+            return future
+
+        executor_instance.submit.side_effect = _submit
+        mock_executor_cls.return_value.__enter__.return_value = executor_instance
+        mock_as_completed.side_effect = lambda futures: futures
+
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [
+                    {"chunk_id": "chunk-000", "keyframe_indexes": [0]},
+                    {"chunk_id": "chunk-001", "keyframe_indexes": [1]},
+                    {"chunk_id": "chunk-002", "keyframe_indexes": [2]},
+                    {"chunk_id": "chunk-003", "keyframe_indexes": [3]},
+                ],
+                "keyframes": [
+                    {"time": "00:01", "image": "a"},
+                    {"time": "00:02", "image": "b"},
+                    {"time": "00:03", "image": "c"},
+                    {"time": "00:04", "image": "d"},
+                ],
+                "chunk_results": [],
+                "user_prompt": "并行验证",
+            },
+        )
+
+        with patch("core.workflow.video_summary.nodes.chunk_vision_analyzer.MAP_MAX_PARALLELISM", 2):
+            with patch("core.workflow.video_summary.nodes.chunk_vision_analyzer.CHUNK_MAX_TOOL_CALLS", 0):
+                result = chunk_vision_analyzer_node(state)
+
+        self.assertEqual(len(result["chunk_results"]), 4)
+        mock_executor_cls.assert_called_once_with(max_workers=2)
+        self.assertEqual(executor_instance.submit.call_count, 4)
+        self.assertEqual(len(submitted_calls), 4)
+        self.assertEqual(len(submitted_futures), 4)
+        mock_as_completed.assert_called_once()
+        self.assertEqual(mock_process.call_count, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

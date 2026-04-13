@@ -52,12 +52,18 @@ def build_video_summary_graph(checkpointer: Any = None) -> Any:
     workflow.add_edge(START, "chunk_planner_node")
     workflow.add_edge("chunk_planner_node", "map_dispatch_node")
 
-    # 3.2 迭代 B：分片 Worker 群落（chunk_audio -> chunk_vision -> chunk_synthesizer）
+    # 3.2 迭代 B 强化：并行执行 chunk_audio 与 chunk_vision 分析器
+    # 新的并行拓扑：map_dispatch → {chunk_audio, chunk_vision} 并行 → chunk_synthesizer
+    # LangGraph 会自动使用 chunk_results 上的 reducer 函数合并两个并行分支的更新
     workflow.add_edge("map_dispatch_node", "chunk_audio_node")
-    workflow.add_edge("chunk_audio_node", "chunk_vision_node")
+    workflow.add_edge("map_dispatch_node", "chunk_vision_node")
+    
+    # 两个分析器的结果会在这里汇聚（fan-in），chunk_results 通过 reducer 自动合并
+    workflow.add_edge("chunk_audio_node", "chunk_synthesizer_node")
     workflow.add_edge("chunk_vision_node", "chunk_synthesizer_node")
 
-    # 3.3 保持现有全局分析主链，确保向后兼容
+    # 3.3 迭代 C 预留：全局分析与融合阶段开始
+    # chunk_synthesizer 汇聚了并行音视频分片分析的成果，准备进入全局分析链路
     workflow.add_edge("chunk_synthesizer_node", "text_analyzer_node")
     workflow.add_edge("chunk_synthesizer_node", "vision_analyzer_node")
 

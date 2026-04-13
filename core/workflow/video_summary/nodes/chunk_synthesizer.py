@@ -1,9 +1,11 @@
 import os
 import time
-from typing import Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
+from config.settings import MAP_MAX_PARALLELISM
 from core.workflow.video_summary.state import VideoSummaryState
 
 
@@ -41,6 +43,40 @@ def _llm_chunk_fusion(chunk_id: str, audio_insights: str, vision_insights: str, 
     return response.choices[0].message.content or ""
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _process_single_chunk_synthesis(
+    chunk_id: str,
+    user_prompt: str,
+    base_item: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
+    started = time.perf_counter()
+    item = dict(base_item)
+    audio_insights = str(item.get("audio_insights", ""))
+    vision_insights = str(item.get("vision_insights", ""))
+
+    try:
+        chunk_summary = _llm_chunk_fusion(chunk_id, audio_insights, vision_insights, user_prompt)
+    except Exception as exc:
+        chunk_summary = f"[chunk={chunk_id}] 分片融合降级：{str(exc)}"
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    latency_info = _as_dict(item.get("latency_ms"))
+    item.update(
+        {
+            "chunk_id": chunk_id,
+            "chunk_summary": chunk_summary,
+            "latency_ms": {
+                **latency_info,
+                "synthesizer": latency_ms,
+            },
+        }
+    )
+    return chunk_id, item
+
+
 def chunk_synthesizer_node(state: VideoSummaryState) -> dict:
     chunk_plan = state.get("chunk_plan", [])
     chunk_results = state.get("chunk_results", [])
@@ -51,43 +87,38 @@ def chunk_synthesizer_node(state: VideoSummaryState) -> dict:
     if not isinstance(chunk_results, list):
         chunk_results = []
 
-    result_map: Dict[str, Dict] = {
+    result_map: Dict[str, Dict[str, Any]] = {
         str(item.get("chunk_id", "")): dict(item)
         for item in chunk_results
         if isinstance(item, dict) and str(item.get("chunk_id", "")).strip()
     }
 
+    valid_chunk_ids: List[str] = []
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
         chunk_id = str(chunk.get("chunk_id", "")).strip()
         if not chunk_id:
             continue
+        valid_chunk_ids.append(chunk_id)
 
-        started = time.perf_counter()
-        item = result_map.get(chunk_id, {"chunk_id": chunk_id})
-        audio_insights = str(item.get("audio_insights", ""))
-        vision_insights = str(item.get("vision_insights", ""))
+    max_workers = max(1, MAP_MAX_PARALLELISM)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _process_single_chunk_synthesis,
+                chunk_id,
+                user_prompt,
+                result_map.get(chunk_id, {"chunk_id": chunk_id}),
+            )
+            for chunk_id in valid_chunk_ids
+        ]
 
-        try:
-            chunk_summary = _llm_chunk_fusion(chunk_id, audio_insights, vision_insights, user_prompt)
-        except Exception as exc:
-            chunk_summary = f"[chunk={chunk_id}] 分片融合降级：{str(exc)}"
+        for future in as_completed(futures):
+            chunk_id, item = future.result()
+            result_map[chunk_id] = item
 
-        latency_ms = int((time.perf_counter() - started) * 1000)
-
-        item.update(
-            {
-                "chunk_summary": chunk_summary,
-                "latency_ms": {
-                    **(item.get("latency_ms", {}) if isinstance(item.get("latency_ms", {}), dict) else {}),
-                    "synthesizer": latency_ms,
-                },
-            }
-        )
-        result_map[chunk_id] = item
-
-    ordered_results: List[Dict] = []
+    ordered_results: List[Dict[str, Any]] = []
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
