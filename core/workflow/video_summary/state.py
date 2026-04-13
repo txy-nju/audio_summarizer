@@ -14,6 +14,9 @@ class VideoSummaryState(TypedDict):
     video_duration_seconds: int     # 推断出的视频总时长（秒）
     chunk_plan: List[Dict]          # 分片计划
     chunk_results: List[Dict]       # 分片执行结果（迭代 B/C 填充）
+    current_chunk: Dict             # 当前分片上下文（为 Send API 预留）
+    chunk_audio_insights: Dict      # 分片音频洞察映射（可选中间态）
+    chunk_visual_insights: Dict     # 分片视觉洞察映射（可选中间态）
     chunk_retry_count: Dict         # 分片重试计数
     reduce_debug_info: Dict         # Reduce 阶段调试元信息
     

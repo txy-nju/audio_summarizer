@@ -37,3 +37,7 @@ CHECKPOINT_DB_URL = os.getenv("CHECKPOINT_DB_URL", "")
 MAP_CHUNK_SECONDS = int(os.getenv("MAP_CHUNK_SECONDS", "120"))
 MAP_CHUNK_OVERLAP_SECONDS = int(os.getenv("MAP_CHUNK_OVERLAP_SECONDS", "10"))
 MAP_MAX_PARALLELISM = int(os.getenv("MAP_MAX_PARALLELISM", "4"))
+
+# 5.3 Map-Reduce（迭代 B）配置
+CHUNK_MAX_TOOL_CALLS = int(os.getenv("CHUNK_MAX_TOOL_CALLS", "2"))
+ENABLE_CHUNK_CACHE = os.getenv("ENABLE_CHUNK_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
