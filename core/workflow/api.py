@@ -75,9 +75,19 @@ def summarize_video(
 
     # Node 名称与前端友好播报信息的极客风映射表
     node_msg_map = {
-        "text_analyzer_node": "🧠 [Audio Agent] 并发线程：正在利用大模型深入梳理数千字的语音逐字稿...",
-        "vision_analyzer_node": "👁️ [Vision Agent] 并发线程：正将数百张关键帧特征灌入视觉模型以提取图文细节...",
-        "fusion_drafter_node": "🧩 [Synthesizer Agent] 正在根据精准的时空锚点，将音视频特征融合缝合并起草首版报告...",
+        # 迭代 A & B：分片计划与微智能体群 (Plan Checker + Chunk Micro-Agents)
+        "chunk_planner_node": "📋 [Plan Checker] 正在以时间戳为锚点，将视频逻辑分割成多个 120 秒粒度的分片任务...",
+        "map_dispatch_node": "🗺️ [Dispatcher] 正在为微智能体群编排分片执行配方，准备发起并行实时处理...",
+        
+        # 迭代 B 并行微智能体群 (Micro-Agent Swarm)
+        "chunk_audio_node": "🎧 [Chunk Audio Micro-Agent] 微线程 1&2&3 并行：正在对每个 120s 分片逐一进行语音深度梳理与查证搜索...",
+        "chunk_vision_node": "📸 [Chunk Vision Micro-Agent] 并行通道：正同步对应时间片的关键帧进行视觉特征提取与图表解析...",
+        "chunk_synthesizer_node": "⚡ [Chunk Synthesizer] 并行汇聚：将分片级音视频洞察实时融合为中间层 chunk_summary...",
+        
+        # 全局分析层 (Global Analysis)
+        "text_analyzer_node": "🧠 [Audio Agent] 并发线程：正在利用大模型深入梳理数千字的全局语音逐字稿...",
+        "vision_analyzer_node": "👁️ [Vision Agent] 并发线程：正将全部关键帧特征灌入视觉模型以提取全局图文细节...",
+        "fusion_drafter_node": "🧩 [Synthesizer Agent] 正在根据分片 chunk_summary 与全局洞察，融合缝合并起草最终报告...",
         "hallucination_grader_node": "⚖️ [Hallucination Guard] 启动 SSCD 时空对抗防御网，正在对草稿中的每一个数据源进行反向核查...",
         "usefulness_grader_node": "🎯 [Usefulness Guard] 正在从挑剔的 C-level 视角评估当前的总结草稿是否真正命中了您的原始痛点诉求..."
     }
@@ -99,11 +109,26 @@ def summarize_video(
             if status_callback and node_name in node_msg_map:
                 msg = node_msg_map[node_name]
                 
-                # 为核心草稿生成节点动态加入轮次重写标识
+                # [微智能体群特殊播报] 分片合成完成时，动态追加汇聚确认信号
+                if node_name == "chunk_synthesizer_node":
+                    chunk_results = current_state.get("chunk_results", [])
+                    if isinstance(chunk_results, list) and chunk_results:
+                        num_chunks = len(chunk_results)
+                        msg = f"{msg}\n✅ [微智能体群汇聚] 已完成 {num_chunks} 个分片的并行深度分析，成果已交付全局融合层..."
+                
+                # 为核心草稿生成节点动态加入轮次重写标识与分片结合上下文
                 if node_name == "fusion_drafter_node":
                     rev = current_state.get("revision_count", 1)
+                    chunk_results = current_state.get("chunk_results", [])
+                    has_chunk_data = isinstance(chunk_results, list) and len(chunk_results) > 0
+                    
                     if rev > 1:
                         msg = f"🔄 [Reflective Synthesizer] 收到来自质量检查门神的强制驳回指令，正在进行第 {rev} 次深度重组修改..."
+                    elif has_chunk_data:
+                        chunk_count = len(chunk_results)
+                        msg = f"🧩 [Synthesizer Agent 全局融合] 正在将 {chunk_count} 个分片中的音视频融合成果按时间序列编织成完整的全景总结报告..."
+                    else:
+                        msg = "🧩 [Synthesizer Agent] 正在进行全局融合分析..."
                 
                 status_callback(msg)
                 
