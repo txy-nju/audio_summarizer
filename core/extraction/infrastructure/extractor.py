@@ -33,14 +33,31 @@ class MediaExtractor:
             raise IOError(f"Failed to extract audio from {video_path}: {e}")
 
     @staticmethod
-    def _calc_histogram(image):
-        """计算图像的归一化灰度直方图"""
+    def _calc_histogram(image, compare_max_size: int = 320):
+        """计算图像的归一化灰度直方图（用于场景比较，默认先降采样以提速）。"""
+        h, w = image.shape[:2]
+        if max(h, w) > compare_max_size:
+            if h > w:
+                new_h = compare_max_size
+                new_w = int(w * (compare_max_size / h))
+            else:
+                new_w = compare_max_size
+                new_h = int(h * (compare_max_size / w))
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
         cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
         return hist
 
-    def extract_frames(self, video_path: Path, interval: int = 2, max_interval: int = 60, threshold: float = 0.90) -> list[dict]:
+    def extract_frames(
+        self,
+        video_path: Path,
+        interval: int = 2,
+        max_interval: int = 60,
+        threshold: float = 0.90,
+        probe_fps: int = 5,
+    ) -> list[dict]:
         """
         基于场景检测（直方图对比）的智能关键帧提取，有效降低 Token 消耗并保留重要信息。
         
@@ -48,6 +65,7 @@ class MediaExtractor:
         :param interval: 两次抽帧的最小时间间隔（秒），即防抖间隔 (兼容旧代码中的 interval)
         :param max_interval: 强制抽帧的最大时间间隔（秒），用于防断层兜底
         :param threshold: 直方图相关性阈值，低于该值则认为场景发生突变
+        :param probe_fps: 探测频率（每秒参与场景判定的帧数）。值越小越快，但可能降低突变检测灵敏度
         :return: 符合 VideoSummaryState 契约的字典列表
         """
         if not video_path.exists():
@@ -64,6 +82,10 @@ class MediaExtractor:
 
         frames = []
         frame_count = 0
+
+        # 探测步长：逐帧读取，但仅按固定频率执行场景判定与编码，降低热路径计算开销
+        safe_probe_fps = max(1, probe_fps)
+        probe_stride = max(1, int(fps / safe_probe_fps))
         
         last_extracted_time = -1000.0  # 确保第0秒强制抽取
         last_hist = None
@@ -73,11 +95,18 @@ class MediaExtractor:
             if not success or image is None:
                 # 视频流中断、损坏或自然结束，安全退出
                 break
+
+            # 跳过非探测帧，降低直方图比较与编码开销
+            if probe_stride > 1 and frame_count % probe_stride != 0:
+                frame_count += 1
+                continue
                 
             current_time = frame_count / fps
             should_extract = False
             
             # 条件 1：首帧强制抽取作为基准 Anchor
+            current_hist = None
+
             if last_hist is None:
                 should_extract = True
             else:
@@ -107,7 +136,10 @@ class MediaExtractor:
                     image = cv2.resize(image, (new_w, new_h))
 
                 # 更新基准与时间
-                last_hist = self._calc_histogram(image)
+                # 复用已计算的 current_hist，避免重复计算
+                if current_hist is None:
+                    current_hist = self._calc_histogram(image)
+                last_hist = current_hist
                 last_extracted_time = current_time
 
                 # 编码为 Base64
