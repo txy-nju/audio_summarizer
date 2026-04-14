@@ -101,6 +101,7 @@ def summarize_video(
         "transcript": transcript,
         "keyframes": keyframes,
         "keyframes_base_path": str(TEMP_FRAMES_DIR),
+        "concurrency_mode": resolved_mode,
         "user_prompt": user_prompt,
         "text_insights": "",
         "visual_insights": "",
@@ -123,6 +124,7 @@ def summarize_video(
         
         # 迭代 B 并行微智能体群 (Micro-Agent Swarm)
         "chunk_audio_node": "🎧 [Chunk Audio Micro-Agent] 微线程 1&2&3 并行：正在对每个 120s 分片逐一进行语音深度梳理与查证搜索...",
+        "chunk_audio_worker_node": "🎧 [Chunk Audio Send Worker] 图级 fan-out：正在处理单分片音频洞察...",
         "chunk_vision_node": "📸 [Chunk Vision Micro-Agent] 并行通道：正同步对应时间片的关键帧进行视觉特征提取与图表解析...",
         "chunk_synthesizer_node": "⚡ [Chunk Synthesizer] 并行汇聚：将分片级音视频洞察实时融合为中间层 chunk_summary...",
         

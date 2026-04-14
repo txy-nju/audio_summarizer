@@ -218,3 +218,37 @@ def chunk_audio_analyzer_node(state: VideoSummaryState) -> dict:
             ordered_results.append(result_map[chunk_id])
 
     return {"chunk_results": ordered_results}
+
+
+def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
+    """
+    Send API 试点 worker：每次仅处理一个 current_chunk。
+    """
+    current_chunk = state.get("current_chunk", {})
+    if not isinstance(current_chunk, dict):
+        return {"chunk_results": []}
+
+    chunk_id = str(current_chunk.get("chunk_id", "")).strip()
+    if not chunk_id:
+        return {"chunk_results": []}
+
+    indexes = current_chunk.get("transcript_segment_indexes", [])
+    if not isinstance(indexes, list):
+        indexes = []
+
+    transcript = str(state.get("transcript", ""))
+    user_prompt = str(state.get("user_prompt", ""))
+    transcript_items = _build_transcript_items(_load_transcript_data(transcript))
+
+    base_item = state.get("current_chunk_base_item", {"chunk_id": chunk_id})
+    if not isinstance(base_item, dict):
+        base_item = {"chunk_id": chunk_id}
+
+    _, merged = _process_single_chunk_audio(
+        chunk_id,
+        indexes,
+        transcript_items,
+        user_prompt,
+        base_item,
+    )
+    return {"chunk_results": [merged]}

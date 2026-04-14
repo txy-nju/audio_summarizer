@@ -88,6 +88,7 @@ def _merge_chunk_results(base: List[Dict], update: List[Dict]) -> List[Dict]:
 
 class VideoSummaryState(TypedDict):
     # 输入层数据
+    concurrency_mode: str           # 并发模式：threadpool / send_api
     transcript: str                 # 视频语音识别文本 (ASR/Whisper 输出)
     keyframes: List[Dict]           # 关键帧列表，包含 base64 数据及时间戳：[{"time": "00:15", "image": "base64_str"}]
     keyframes_base_path: str        # 关键帧文件引用模式下的根目录（用于 frame_file 解析）
@@ -102,6 +103,7 @@ class VideoSummaryState(TypedDict):
     chunk_plan: List[Dict]          # 分片计划
     chunk_results: Annotated[List[Dict], _merge_chunk_results]  # 带 reducer 的分片结果，支持并行分支合并
     current_chunk: Dict             # 当前分片上下文（为 Send API 预留）
+    current_chunk_base_item: Dict   # 当前分片已有结果（Send API worker 合并基座）
     chunk_audio_insights: Dict      # 分片音频洞察映射（可选中间态）
     chunk_visual_insights: Dict     # 分片视觉洞察映射（可选中间态）
     chunk_retry_count: Dict         # 分片重试计数
