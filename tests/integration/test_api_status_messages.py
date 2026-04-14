@@ -6,6 +6,7 @@
 """
 
 import unittest
+import json
 from unittest.mock import MagicMock, patch
 from core.workflow.api import summarize_video
 
@@ -231,6 +232,64 @@ class TestApiStatusMessages(unittest.TestCase):
                 any("2 个分片" in m for m in fusion_msgs),
                 "Fusion Drafter 应该根据分片数据调整消息"
             )
+
+    def test_send_api_progress_event_contains_synthesis_dimension(self):
+        """验证 send_api 进度事件包含 synthesis_done 且总体分母为 3 倍 chunk 数"""
+        messages = []
+
+        def mock_callback(msg):
+            messages.append(msg)
+
+        transcript = '{"segments": []}'
+        keyframes = []
+
+        with patch("core.workflow.api.build_video_summary_graph") as mock_graph:
+            mock_app = MagicMock()
+            mock_graph.return_value = mock_app
+
+            mock_app.stream.return_value = iter([
+                {"chunk_planner_node": {"chunk_plan": [{"chunk_id": "c1"}, {"chunk_id": "c2"}]}} ,
+                {
+                    "chunk_audio_worker_node": {
+                        "chunk_results": [
+                            {"chunk_id": "c1", "audio_insights": "a1"},
+                            {"chunk_id": "c2", "audio_insights": "a2"},
+                        ]
+                    }
+                },
+                {
+                    "chunk_vision_worker_node": {
+                        "chunk_results": [
+                            {"chunk_id": "c1", "vision_insights": "v1"},
+                            {"chunk_id": "c2", "vision_insights": "v2"},
+                        ]
+                    }
+                },
+                {
+                    "chunk_synthesizer_worker_node": {
+                        "chunk_results": [
+                            {"chunk_id": "c1", "chunk_summary": "s1"},
+                            {"chunk_id": "c2", "chunk_summary": "s2"},
+                        ]
+                    }
+                },
+            ])
+
+            summarize_video(
+                transcript=transcript,
+                keyframes=keyframes,
+                status_callback=mock_callback,
+                concurrency_mode="send_api",
+            )
+
+        progress_msgs = [m for m in messages if isinstance(m, str) and m.startswith("[[PROGRESS]]")]
+        self.assertTrue(progress_msgs, "应至少产生一条结构化进度事件")
+
+        payload = json.loads(progress_msgs[-1][len("[[PROGRESS]]"):])
+        self.assertEqual(payload.get("type"), "chunk_progress")
+        self.assertEqual(payload.get("synthesis_done"), 2)
+        self.assertEqual(payload.get("overall_total"), 6)
+        self.assertEqual(payload.get("overall_done"), 6)
 
 
 if __name__ == "__main__":
