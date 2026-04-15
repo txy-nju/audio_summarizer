@@ -13,6 +13,7 @@ from core.workflow.video_summary.nodes.chunk_audio_analyzer import chunk_audio_a
 from core.workflow.video_summary.nodes.chunk_vision_analyzer import chunk_vision_analyzer_node, chunk_vision_worker_node
 from core.workflow.video_summary.nodes.chunk_synthesizer import chunk_synthesizer_node, chunk_synthesizer_worker_node
 from core.workflow.video_summary.nodes.chunk_aggregator import chunk_aggregator_node
+from core.workflow.video_summary.nodes.human_gate import human_gate_node
 from core.workflow.video_summary.nodes.fusion_drafter import fusion_drafter_node
 
 # 质量审查节点
@@ -21,8 +22,11 @@ from core.workflow.video_summary.nodes.usefulness_grader import usefulness_grade
 
 # 质量审查路由常量与路由函数
 from core.workflow.video_summary.edges.router import (
+    route_after_human_gate,
     route_after_hallucination, 
     route_after_usefulness,
+    ROUTE_PENDING_HUMAN_REVIEW,
+    ROUTE_HUMAN_APPROVED,
     ROUTE_HAS_HALLUCINATION,
     ROUTE_NO_HALLUCINATION,
     ROUTE_NOT_USEFUL,
@@ -84,6 +88,7 @@ def build_video_summary_graph(checkpointer: Any = None, concurrency_mode: str = 
     workflow.add_node("chunk_synthesizer_worker_node", chunk_synthesizer_worker_node) # type: ignore
     workflow.add_node("chunk_synthesizer_node", chunk_synthesizer_node) # type: ignore
     workflow.add_node("chunk_aggregator_node", chunk_aggregator_node) # type: ignore
+    workflow.add_node("human_gate_node", human_gate_node) # type: ignore
     workflow.add_node("fusion_drafter_node", fusion_drafter_node) # type: ignore
     
     # 注册质量审查节点
@@ -99,7 +104,15 @@ def build_video_summary_graph(checkpointer: Any = None, concurrency_mode: str = 
 
     # 分片结果先聚合，再交由成文节点生成草稿
     workflow.add_edge("chunk_synthesizer_node", "chunk_aggregator_node")
-    workflow.add_edge("chunk_aggregator_node", "fusion_drafter_node")
+    workflow.add_edge("chunk_aggregator_node", "human_gate_node")
+    workflow.add_conditional_edges(
+        "human_gate_node",
+        route_after_human_gate,
+        {
+            ROUTE_PENDING_HUMAN_REVIEW: END,
+            ROUTE_HUMAN_APPROVED: "fusion_drafter_node",
+        },
+    )
 
     # 草稿生成后依次经过幻觉审查和有用性审查
     workflow.add_edge("fusion_drafter_node", "hallucination_grader_node")
@@ -125,4 +138,37 @@ def build_video_summary_graph(checkpointer: Any = None, concurrency_mode: str = 
     )
 
     # 4. 编译并返回可执行工作流
+    return workflow.compile(checkpointer=checkpointer)
+
+
+def build_finalization_graph(checkpointer: Any = None) -> Any:
+    """
+    第二阶段（人类审批后）图：
+    START -> fusion_drafter -> hallucination_grader -> usefulness_grader(循环) -> END
+    """
+    workflow = StateGraph(VideoSummaryState)  # type: ignore
+
+    workflow.add_node("fusion_drafter_node", fusion_drafter_node)  # type: ignore
+    workflow.add_node("hallucination_grader_node", hallucination_grader_node)  # type: ignore
+    workflow.add_node("usefulness_grader_node", usefulness_grader_node)  # type: ignore
+
+    workflow.add_edge(START, "fusion_drafter_node")
+    workflow.add_edge("fusion_drafter_node", "hallucination_grader_node")
+    workflow.add_conditional_edges(
+        "hallucination_grader_node",
+        route_after_hallucination,
+        {
+            ROUTE_HAS_HALLUCINATION: "fusion_drafter_node",
+            ROUTE_NO_HALLUCINATION: "usefulness_grader_node",
+        },
+    )
+    workflow.add_conditional_edges(
+        "usefulness_grader_node",
+        route_after_usefulness,
+        {
+            ROUTE_NOT_USEFUL: "fusion_drafter_node",
+            ROUTE_USEFUL: END,
+        },
+    )
+
     return workflow.compile(checkpointer=checkpointer)

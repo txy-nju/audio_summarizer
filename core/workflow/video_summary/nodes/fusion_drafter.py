@@ -30,6 +30,8 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
     """
     current_count = state.get("revision_count", 0)
     aggregated_chunk_insights = state.get("aggregated_chunk_insights", "")
+    human_edited_aggregated_insights = state.get("human_edited_aggregated_insights", "")
+    human_guidance = state.get("human_guidance", "")
     user_prompt = state.get("user_prompt", "")
     feedback_instructions = state.get("feedback_instructions", "")
 
@@ -53,6 +55,13 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
         "3. 📝 专业排版规范：输出必须使用易于阅读的 Markdown 语法。建议包含：【内容导读】、【核心内容解析】、【关键结论】、【总结与建议】等模块。"
     )
 
+    if human_guidance and str(human_guidance).strip():
+        system_prompt += (
+            "\n\n【人类审批补充指令（最高优先级）】：\n"
+            f"{human_guidance}\n"
+            "请在不违背证据约束的前提下，严格遵从以上人类指令。"
+        )
+
     # 若上游审查节点给出了反馈，则在本轮生成中附带修改约束
     if feedback_instructions and feedback_instructions.strip():
         system_prompt += (
@@ -64,9 +73,15 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
         )
 
     # 4. 组装 User Content
+    effective_aggregated_insights = (
+        human_edited_aggregated_insights
+        if str(human_edited_aggregated_insights).strip()
+        else aggregated_chunk_insights
+    )
+
     user_content = (
         f"【用户期望的总结侧重点】：\n{user_prompt}\n\n"
-        f"【分片聚合证据（唯一输入）】：\n{aggregated_chunk_insights}"
+        f"【分片聚合证据（唯一输入）】：\n{effective_aggregated_insights}"
     )
 
     print(f"  -> [Fusion Drafter Node] Drafting final report from aggregated chunk insights (Revision {current_count + 1})...")

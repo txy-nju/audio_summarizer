@@ -6,6 +6,24 @@ ROUTE_HAS_HALLUCINATION = "Has Hallucination"
 ROUTE_NO_HALLUCINATION = "No Hallucination"
 ROUTE_NOT_USEFUL = "Not Useful"
 ROUTE_USEFUL = "Useful"
+ROUTE_PENDING_HUMAN_REVIEW = "Pending Human Review"
+ROUTE_HUMAN_APPROVED = "Human Approved"
+
+
+def route_after_human_gate(state: VideoSummaryState) -> Literal["Pending Human Review", "Human Approved"]:  # type: ignore
+    """
+    人类审批路由：
+    - approved -> 放行到 fusion_drafter
+    - 其他值（含空）-> Pending，直接结束 phase-1
+    """
+    gate_status = state.get("human_gate_status")
+    if not gate_status or not isinstance(gate_status, str):
+        return ROUTE_PENDING_HUMAN_REVIEW
+
+    if gate_status.strip().lower() == "approved":
+        return ROUTE_HUMAN_APPROVED
+
+    return ROUTE_PENDING_HUMAN_REVIEW
 
 def route_after_hallucination(state: VideoSummaryState) -> Literal["Has Hallucination", "No Hallucination"]: # type: ignore
     """

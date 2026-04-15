@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from core.workflow.api import summarize_video, answer_question_at_timestamp
+from core.workflow.api import analyze_video, answer_question_at_timestamp
 
 
 class _SharedFakeCheckpointer:
@@ -41,7 +41,7 @@ class _FakeWorkflowApp:
 
 
 class TestCheckpointRestoreFlow(unittest.TestCase):
-    def test_summarize_video_persists_state_for_time_travel(self):
+    def test_analyze_video_persists_state_for_time_travel(self):
         """阶段4：同一 thread_id 首次总结后，应能被时间旅行接口读取并回答。"""
         checkpointer = _SharedFakeCheckpointer()
         transcript = '{"segments": [{"start": 9, "end": 13, "text": "persisted evidence"}]}'
@@ -52,7 +52,7 @@ class TestCheckpointRestoreFlow(unittest.TestCase):
                 "core.workflow.api.build_video_summary_graph",
                 return_value=_FakeWorkflowApp(checkpointer, summary_text="first summary"),
             ):
-                summary = summarize_video(
+                review_package = analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     user_prompt="请关注关键细节",
@@ -66,7 +66,8 @@ class TestCheckpointRestoreFlow(unittest.TestCase):
                     question="这里说了什么？",
                 )
 
-        self.assertEqual(summary, "first summary")
+        self.assertEqual(review_package.get("stage"), "pending_human_review")
+        self.assertEqual(review_package.get("thread_id"), "thread-persist")
         self.assertIn("persisted evidence", answer)
         self.assertIn("目标时间戳: 00:10", answer)
 
@@ -81,7 +82,7 @@ class TestCheckpointRestoreFlow(unittest.TestCase):
                 "core.workflow.api.build_video_summary_graph",
                 return_value=_FakeWorkflowApp(checkpointer, summary_text="first summary"),
             ):
-                summarize_video(
+                analyze_video(
                     transcript=old_transcript,
                     keyframes=[{"time": "00:05", "image": ""}],
                     user_prompt="old prompt",
@@ -92,7 +93,7 @@ class TestCheckpointRestoreFlow(unittest.TestCase):
                 "core.workflow.api.build_video_summary_graph",
                 return_value=_FakeWorkflowApp(checkpointer, summary_text="second summary"),
             ):
-                summarize_video(
+                analyze_video(
                     transcript=new_transcript,
                     keyframes=[{"time": "00:16", "image": ""}],
                     user_prompt="new prompt",

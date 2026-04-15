@@ -1,14 +1,18 @@
 import os
 import time
 import random
-from typing import IO, Callable, Optional
+from typing import IO, Callable, Optional, Dict, Any
 
 # 引入抽象层和具体策略
 from core.extraction.base import VideoSource
 from core.extraction.sources import UrlVideoSource, LocalFileVideoSource
 
 # 【核心改造】引入新的工作流接口，不再需要旧的 analysis 和 generation
-from core.workflow import summarize_video, answer_question_at_timestamp
+from core.workflow import (
+    analyze_video,
+    finalize_summary as _finalize_summary_api,
+    answer_question_at_timestamp,
+)
 from core.workflow.session import ensure_thread_id
 from utils.file_utils import clear_temp_folder
 from utils.logger import setup_logger, log_metric_event
@@ -34,18 +38,18 @@ class VideoSummaryService:
         # 核心组件的初始化现在由 langgraph 内部管理
         self.metrics_logger = setup_logger("video_summarizer.metrics")
 
-    def _process_source(
+    def _analyze_source(
         self,
         source: VideoSource,
         user_prompt: str = "",
         status_callback: Optional[Callable[[str], None]] = None,
         thread_id: str = "",
         concurrency_mode: str = "",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
         统一的内部处理逻辑：
         1. 使用 VideoSource 获取内容 (Transcript + Frames)
-        2. 调用新的工作流进行分析和总结
+        2. 调用工作流第一阶段，返回待审批包
         """
         metrics_enabled = ENABLE_METRICS_LOGGING and random.random() <= METRICS_SAMPLE_RATE
         process_started_at = time.perf_counter()
@@ -65,7 +69,7 @@ class VideoSummaryService:
                     extraction_duration_ms=extraction_ms,
                 )
 
-            # 2. 【核心改造】调用新的、符合架构的 summarize_video 函数
+            # 2. 调用第一阶段入口 analyze_video，执行分片分析并返回待审批包
             if status_callback:
                 status_callback("🔗 音频底模与关键帧视觉流预处理成功。多模态数据已向 AI 并发流水线集结。")
                 
@@ -80,7 +84,7 @@ class VideoSummaryService:
             self.last_thread_id = resolved_thread_id
 
             workflow_started_at = time.perf_counter()
-            summary = summarize_video(
+            review_package = analyze_video(
                 transcript=transcript,
                 keyframes=frames,
                 user_prompt=user_prompt,
@@ -90,21 +94,24 @@ class VideoSummaryService:
             )
             workflow_ms = int((time.perf_counter() - workflow_started_at) * 1000)
 
+            if isinstance(review_package, dict):
+                self.last_thread_id = str(review_package.get("thread_id", resolved_thread_id)) or resolved_thread_id
+
             if metrics_enabled:
                 log_metric_event(
                     self.metrics_logger,
                     "service_workflow_finished",
                     thread_id=resolved_thread_id,
                     workflow_duration_ms=workflow_ms,
-                    summary_chars=len(summary),
+                    summary_chars=0,
                 )
             
             if status_callback:
-                status_callback("🎉 LangGraph 复杂的自反思闭环流转结束。一份完美的报告已送达交付点！")
+                status_callback("🎉 第一阶段完成：聚合稿已生成并进入人类审批关口。")
                 
             print("Workflow complete.")
             
-            return summary
+            return review_package
         finally:
             if metrics_enabled:
                 total_ms = int((time.perf_counter() - process_started_at) * 1000)
@@ -118,16 +125,16 @@ class VideoSummaryService:
             # 在结束后清理，确保不留垃圾文件
             clear_temp_folder()
 
-    def process_video_from_url(
+    def analyze_url_video(
         self,
         url: str,
         user_prompt: str = "",
         status_callback: Optional[Callable[[str], None]] = None,
         thread_id: str = "",
         concurrency_mode: str = "",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        针对 URL 的完整流程。
+        第一阶段入口（URL 来源）：下载视频，执行分片分析，返回待审批包。
         """
         # [生命周期 Bugfix]：必须在实例化 Source (其底层处理器会在 init 时建文件夹) 之前，进行清空操作。
         # 否则 clear_temp_folder 会把刚建好的 temp/videos 删掉，导致 FileNotFoundError。
@@ -135,7 +142,7 @@ class VideoSummaryService:
         
         # 创建 Source 实例时传入必要的配置
         source = UrlVideoSource(url, api_key=self.api_key, base_url=self.base_url)
-        return self._process_source(
+        return self._analyze_source(
             source,
             user_prompt=user_prompt,
             status_callback=status_callback,
@@ -143,7 +150,7 @@ class VideoSummaryService:
             concurrency_mode=concurrency_mode,
         )
 
-    def process_uploaded_video(
+    def analyze_uploaded_video(
         self,
         uploaded_file: IO[bytes],
         original_filename: str,
@@ -151,9 +158,9 @@ class VideoSummaryService:
         status_callback: Optional[Callable[[str], None]] = None,
         thread_id: str = "",
         concurrency_mode: str = "",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        针对上传文件的完整流程。
+        第一阶段入口（上传文件来源）：接收上传文件，执行分片分析，返回待审批包。
         """
         # [生命周期 Bugfix]：必须在实例化 Source 之前进行环境清理。
         clear_temp_folder()
@@ -165,12 +172,31 @@ class VideoSummaryService:
             api_key=self.api_key, 
             base_url=self.base_url
         )
-        return self._process_source(
+        return self._analyze_source(
             source,
             user_prompt=user_prompt,
             status_callback=status_callback,
             thread_id=thread_id,
             concurrency_mode=concurrency_mode,
+        )
+
+    def finalize_summary(
+        self,
+        thread_id: str,
+        edited_aggregated_chunk_insights: str = "",
+        human_guidance: str = "",
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """
+        第二阶段：提交人类审批意见并完成最终总结。
+        """
+        resolved_thread_id = ensure_thread_id(thread_id or self.last_thread_id)
+        self.last_thread_id = resolved_thread_id
+        return _finalize_summary_api(
+            thread_id=resolved_thread_id,
+            edited_aggregated_chunk_insights=edited_aggregated_chunk_insights,
+            human_guidance=human_guidance,
+            status_callback=status_callback,
         )
 
     def ask_at_timestamp(

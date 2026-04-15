@@ -8,7 +8,7 @@
 import unittest
 import json
 from unittest.mock import MagicMock, patch
-from core.workflow.api import summarize_video
+from core.workflow.api import analyze_video
 
 
 class TestApiStatusMessages(unittest.TestCase):
@@ -50,7 +50,7 @@ class TestApiStatusMessages(unittest.TestCase):
             
             # 调用 API
             try:
-                summarize_video(
+                analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     status_callback=mock_callback
@@ -60,7 +60,8 @@ class TestApiStatusMessages(unittest.TestCase):
                 pass
             
             # 验证 Plan Checker 的消息被传递
-            plan_checker_msgs = [m for m in messages if "Plan Checker" in m or "📋" in m]
+            plan_checker_msgs = [m for m in messages if "Plan Checker" in m or "📋" in m
+]
             self.assertTrue(
                 len(plan_checker_msgs) > 0,
                 "Plan Checker 的播报信息应该被传递给 status_callback"
@@ -95,7 +96,7 @@ class TestApiStatusMessages(unittest.TestCase):
             ])
             
             try:
-                summarize_video(
+                analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     status_callback=mock_callback
@@ -104,8 +105,10 @@ class TestApiStatusMessages(unittest.TestCase):
                 pass
             
             # 验证微智能体群的消息被传递
-            audio_msgs = [m for m in messages if "Chunk Audio Micro-Agent" in m or "🎧" in m]
-            vision_msgs = [m for m in messages if "Chunk Vision Micro-Agent" in m or "📸" in m]
+            audio_msgs = [m for m in messages if "Chunk Audio Micro-Agent" in m or "🎧" in m
+]
+            vision_msgs = [m for m in messages if "Chunk Vision Micro-Agent" in m or "📸" in m
+]
             synth_msgs = [m for m in messages if "Chunk Synthesizer" in m or "⚡" in m]
             
             self.assertTrue(len(audio_msgs) > 0, "Audio Micro-Agent 消息应该被传递")
@@ -131,7 +134,7 @@ class TestApiStatusMessages(unittest.TestCase):
             ])
             
             try:
-                summarize_video(
+                analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     status_callback=mock_callback
@@ -140,7 +143,8 @@ class TestApiStatusMessages(unittest.TestCase):
                 pass
             
             # 验证 Dispatcher 的消息
-            dispatcher_msgs = [m for m in messages if "Dispatcher" in m or "🗺️" in m]
+            dispatcher_msgs = [m for m in messages if "Dispatcher" in m or "🗺️" in m
+]
             self.assertTrue(
                 len(dispatcher_msgs) > 0,
                 "Dispatcher 的播报信息应该被传递给 status_callback"
@@ -174,7 +178,7 @@ class TestApiStatusMessages(unittest.TestCase):
             ])
             
             try:
-                summarize_video(
+                analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     status_callback=mock_callback
@@ -189,8 +193,8 @@ class TestApiStatusMessages(unittest.TestCase):
                 "Synthesizer 消息应该包含分片计数"
             )
 
-    def test_fusion_drafter_context_awareness(self):
-        """验证融合草稿器能够根据分片数据动态调整播报"""
+    def test_human_gate_message_present(self):
+        """验证第一阶段结束时会播报人类审批节点消息"""
         messages = []
         
         def mock_callback(msg):
@@ -203,22 +207,18 @@ class TestApiStatusMessages(unittest.TestCase):
             mock_app = MagicMock()
             mock_graph.return_value = mock_app
             
-            # 模拟包含分片数据的融合阶段
+            # 模拟进入人类审批节点
             mock_app.stream.return_value = iter([
                 {
-                    "fusion_drafter_node": {
-                        "chunk_results": [
-                            {"chunk_id": "c1"},
-                            {"chunk_id": "c2"},
-                        ],
-                        "draft_summary": "test",
-                        "revision_count": 0,
+                    "human_gate_node": {
+                        "human_gate_status": "pending",
+                        "human_edited_aggregated_insights": "draft",
                     }
                 }
             ])
             
             try:
-                summarize_video(
+                analyze_video(
                     transcript=transcript,
                     keyframes=keyframes,
                     status_callback=mock_callback
@@ -226,11 +226,11 @@ class TestApiStatusMessages(unittest.TestCase):
             except Exception:
                 pass
             
-            # 验证融合节点的上下文感知信息
-            fusion_msgs = [m for m in messages if "Synthesizer Agent" in m or "🧩" in m]
+            gate_msgs = [m for m in messages if "Human Gate" in m or "🧑‍⚖️" in m
+]
             self.assertTrue(
-                any("2 个分片" in m for m in fusion_msgs),
-                "Fusion Drafter 应该根据分片数据调整消息"
+                len(gate_msgs) > 0,
+                "Human Gate 节点消息应该被透传"
             )
 
     def test_send_api_progress_event_contains_synthesis_dimension(self):
@@ -275,7 +275,7 @@ class TestApiStatusMessages(unittest.TestCase):
                 },
             ])
 
-            summarize_video(
+            analyze_video(
                 transcript=transcript,
                 keyframes=keyframes,
                 status_callback=mock_callback,
@@ -294,3 +294,4 @@ class TestApiStatusMessages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

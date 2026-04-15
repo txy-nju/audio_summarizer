@@ -3,8 +3,10 @@ import time
 import random
 import json
 from typing import Any, List, Dict, Callable, Optional
+
 from openai import OpenAI
-from core.workflow.video_summary.graph import build_video_summary_graph
+
+from core.workflow.video_summary.graph import build_video_summary_graph, build_finalization_graph
 from core.workflow.checkpoint_factory import create_checkpointer
 from core.workflow.session import ensure_thread_id
 from core.workflow.time_travel import (
@@ -39,23 +41,18 @@ def _build_time_travel_fallback_response(
         f"降级原因: {reason}"
     )
 
-def summarize_video(
-    transcript: str, 
-    keyframes: List[Dict], 
+
+def analyze_video(
+    transcript: str,
+    keyframes: List[Dict],
     user_prompt: str = "请结合画面与语音，给出一个全面、客观的高质量视频总结。",
     status_callback: Optional[Callable[[str], None]] = None,
     thread_id: str = "",
     concurrency_mode: str = "",
-) -> str:
+) -> Dict[str, Any]:
     """
-    启动视频总结工作流并返回最终总结文本。
-    该函数负责编排 graph、注入 checkpoint/thread_id，并通过 stream() 向前端透传进度。
-    
-    :param transcript: 视频语音识别出的完整文本
-    :param keyframes: 视频关键帧列表，格式必须为 [{"time": "...", "image": "..."}]
-    :param user_prompt: 用户的特殊总结侧重点要求
-    :param status_callback: 允许回调注入状态字符串以供前端展示
-    :return: 最终生成的总结内容（工作流末态的 draft_summary）
+    第一阶段：执行分片规划、分析、聚合并进入人类审批关口。
+    返回待审批包（而不是最终总结）。
     """
     if status_callback:
         status_callback("⚙️ [LangGraph 初始化] 正在编排多智能体认知状态机网络...")
@@ -64,7 +61,6 @@ def summarize_video(
     metrics_logger = setup_logger("video_summarizer.metrics")
     run_started_at = time.perf_counter()
 
-    # 1. 构建工作流实例并解析本次执行配置
     checkpointer = create_checkpointer(CHECKPOINT_BACKEND, CHECKPOINT_DB_URL)
     resolved_mode = resolve_concurrency_mode(concurrency_mode or CONCURRENCY_MODE)
     workflow_app = build_video_summary_graph(
@@ -94,9 +90,8 @@ def summarize_video(
             keyframes_estimate_bytes=keyframes_estimate_bytes,
             user_prompt_chars=len(user_prompt),
         )
-    
-    # 2. 组装初始状态
-    initial_state = {
+
+    initial_state: Dict[str, Any] = {
         "transcript": transcript,
         "keyframes": keyframes,
         "keyframes_base_path": str(TEMP_FRAMES_DIR),
@@ -107,14 +102,16 @@ def summarize_video(
         "hallucination_score": "",
         "usefulness_score": "",
         "feedback_instructions": "",
-        "revision_count": 0
+        "revision_count": 0,
+        "human_edited_aggregated_insights": "",
+        "human_guidance": "",
+        "human_gate_status": "pending",
+        "human_gate_reason": "",
     }
-    
-    # 3. 使用 stream() 获取节点更新并实时刷新前端状态
-    if status_callback:
-        status_callback("⚡ [引擎点火] 工作流正式启动，并行并发拆解多模态任务中...")
 
-    # 节点名称到前端状态文案的映射
+    if status_callback:
+        status_callback("⚡ [引擎点火] 第一阶段启动：并行并发拆解多模态任务并生成待审批聚合稿...")
+
     node_msg_map = {
         "chunk_planner_node": "📋 [Plan Checker] 正在以时间戳为锚点，将视频逻辑分割成多个 120 秒粒度的分片任务...",
         "map_dispatch_node": "🗺️ [Dispatcher] 正在为微智能体群编排分片执行配方，准备发起并行实时处理...",
@@ -126,9 +123,10 @@ def summarize_video(
         "chunk_synthesizer_worker_node": "⚡ [Chunk Synthesizer Send Worker] 图级 fan-out：正在处理单分片融合总结...",
         "chunk_synthesizer_node": "⚡ [Chunk Synthesizer] 并行汇聚：将分片级音视频洞察实时融合为中间层 chunk_summary...",
         "chunk_aggregator_node": "🧾 [Chunk Aggregator] 正在按时间线整合 n 个分片洞察，生成统一证据底稿...",
+        "human_gate_node": "🧑‍⚖️ [Human Gate] 已到达人类审批关口，请确认或编辑聚合稿后继续。",
         "fusion_drafter_node": "🧩 [Synthesizer Agent] 正在基于聚合证据底稿，起草最终报告...",
         "hallucination_grader_node": "⚖️ [Hallucination Guard] 启动 SSCD 时空对抗防御网，正在对草稿中的每一个数据源进行反向核查...",
-        "usefulness_grader_node": "🎯 [Usefulness Guard] 正在从挑剔的 C-level 视角评估当前的总结草稿是否真正命中了您的原始痛点诉求..."
+        "usefulness_grader_node": "🎯 [Usefulness Guard] 正在从挑剔的 C-level 视角评估当前的总结草稿是否真正命中了您的原始痛点诉求...",
     }
 
     def _emit_chunk_progress(
@@ -163,7 +161,6 @@ def summarize_video(
         }
         status_callback(f"[[PROGRESS]]{json.dumps(payload, ensure_ascii=False)}")
 
-    # 维护一个局部状态缓冲区，逐步拼装 stream() 返回的增量状态
     current_state = initial_state.copy()
     previous_event_at = run_started_at
     node_event_counts: Dict[str, int] = {}
@@ -172,19 +169,17 @@ def summarize_video(
     synthesis_done_ids: set[str] = set()
     total_chunks = 0
     last_progress_signature: tuple[int, int, int, int] = (-1, -1, -1, -1)
-    
-    # stream_mode="updates" 会在每个节点完成后产出该节点的状态增量
+
     for output in workflow_app.stream(
         initial_state,
         {"configurable": {"thread_id": resolved_thread_id}},
-        stream_mode="updates"
+        stream_mode="updates",
     ):
         for node_name, state_update in output.items():
             event_now = time.perf_counter()
             since_previous_ms = int((event_now - previous_event_at) * 1000)
             node_event_counts[node_name] = node_event_counts.get(node_name, 0) + 1
 
-            # 实时更新本地状态缓冲区
             current_state.update(state_update)
 
             chunk_plan = current_state.get("chunk_plan", [])
@@ -241,39 +236,15 @@ def summarize_video(
                     chunk_count=chunk_count,
                 )
             previous_event_at = event_now
-            
-            # 对核心节点向前端发送更友好的状态文案
+
             if status_callback and node_name in node_msg_map:
                 msg = node_msg_map[node_name]
-                
-                # 分片融合完成后附带汇聚信息
                 if node_name == "chunk_synthesizer_node":
                     chunk_results = current_state.get("chunk_results", [])
                     if isinstance(chunk_results, list) and chunk_results:
                         num_chunks = len(chunk_results)
                         msg = f"{msg}\n✅ [微智能体群汇聚] 已完成 {num_chunks} 个分片的并行深度分析，成果已交付全局融合层..."
-                
-                # 为成文节点补充轮次和分片数量信息
-                if node_name == "fusion_drafter_node":
-                    rev = current_state.get("revision_count", 1)
-                    chunk_results = current_state.get("chunk_results", [])
-                    has_chunk_data = isinstance(chunk_results, list) and len(chunk_results) > 0
-                    
-                    if rev > 1:
-                        msg = f"🔄 [Reflective Synthesizer] 收到来自质量检查门神的强制驳回指令，正在进行第 {rev} 次深度重组修改..."
-                    elif has_chunk_data:
-                        chunk_count = len(chunk_results)
-                        msg = f"🧩 [Synthesizer Agent 全局融合] 正在将 {chunk_count} 个分片中的音视频融合成果按时间序列编织成完整的全景总结报告..."
-                    else:
-                        msg = "🧩 [Synthesizer Agent] 正在进行全局融合分析..."
-                
                 status_callback(msg)
-                
-                # 当质量审查失败时，额外提示将进入重写
-                if node_name == "hallucination_grader_node" and current_state.get("hallucination_score") == "yes":
-                    status_callback(f"🚨 [系统熔断] 幻觉评分器刚刚挫败了一次模型捏造事实的行为！正在带参打回重建...")
-                elif node_name == "usefulness_grader_node" and current_state.get("usefulness_score") == "no":
-                    status_callback(f"🚨 [系统驳回] 草稿偏离了您的核心输入诉求。已生成定点修改指令打回重做...")
 
     if resolved_mode == "send_api":
         _emit_chunk_progress(
@@ -284,8 +255,20 @@ def summarize_video(
             stage="finished",
         )
 
-    # 4. 返回最终 summary
-    summary = current_state.get("draft_summary", "")
+    aggregated_chunk_insights = str(current_state.get("aggregated_chunk_insights", ""))
+    editable_aggregated_chunk_insights = str(
+        current_state.get("human_edited_aggregated_insights", "") or aggregated_chunk_insights
+    )
+    review_package: Dict[str, Any] = {
+        "thread_id": resolved_thread_id,
+        "stage": "pending_human_review",
+        "human_gate_status": str(current_state.get("human_gate_status", "pending") or "pending"),
+        "human_gate_reason": str(current_state.get("human_gate_reason", "human_review_required") or "human_review_required"),
+        "aggregated_chunk_insights": aggregated_chunk_insights,
+        "editable_aggregated_chunk_insights": editable_aggregated_chunk_insights,
+        "human_guidance": str(current_state.get("human_guidance", "")),
+        "chunk_count": len(current_state.get("chunk_plan", []) if isinstance(current_state.get("chunk_plan", []), list) else []),
+    }
 
     if metrics_enabled:
         final_state_estimate_bytes = 0
@@ -304,11 +287,79 @@ def summarize_video(
             node_count=len(node_event_counts),
             node_event_counts=node_event_counts,
             revision_count=current_state.get("revision_count", 0),
-            summary_chars=len(summary),
+            summary_chars=0,
             final_state_estimate_bytes=final_state_estimate_bytes,
         )
 
-    return summary
+    return review_package
+
+
+def finalize_summary(
+    thread_id: str,
+    edited_aggregated_chunk_insights: str = "",
+    human_guidance: str = "",
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> str:
+    """
+    第二阶段：基于人类审批结果完成全篇总结。
+    """
+    if not thread_id or not thread_id.strip():
+        raise ValueError("thread_id is required")
+
+    resolved_thread_id = ensure_thread_id(thread_id)
+    checkpointer = create_checkpointer(CHECKPOINT_BACKEND, CHECKPOINT_DB_URL)
+    checkpoint = checkpointer.get({"configurable": {"thread_id": resolved_thread_id}})
+    if not checkpoint:
+        raise ValueError(
+            f"未找到 thread_id={resolved_thread_id} 的待审批状态，请先执行 analyze_video() 第一阶段。"
+        )
+
+    channel_values = checkpoint.get("channel_values", {}) if isinstance(checkpoint, dict) else {}
+    if not isinstance(channel_values, dict):
+        raise ValueError("checkpoint channel_values format is invalid")
+
+    aggregated_chunk_insights = str(channel_values.get("aggregated_chunk_insights", ""))
+    final_edited = edited_aggregated_chunk_insights.strip() if edited_aggregated_chunk_insights else aggregated_chunk_insights
+    final_guidance = human_guidance.strip() if human_guidance else ""
+
+    initial_state: Dict[str, Any] = dict(channel_values)
+    initial_state.update(
+        {
+            "human_gate_status": "approved",
+            "human_gate_reason": "approved",
+            "human_edited_aggregated_insights": final_edited,
+            "human_guidance": final_guidance,
+            "draft_summary": "",
+            "hallucination_score": "",
+            "usefulness_score": "",
+            "feedback_instructions": "",
+            "revision_count": 0,
+        }
+    )
+
+    if status_callback:
+        status_callback(f"🧵 [Session] 当前会话 thread_id: {resolved_thread_id}")
+        status_callback("🚀 [Finalization] 审批通过，进入第二阶段全篇总结与质量审查...")
+
+    workflow_app = build_finalization_graph(checkpointer=checkpointer)
+    current_state: Dict[str, Any] = dict(initial_state)
+    node_msg_map = {
+        "fusion_drafter_node": "🧩 [Synthesizer Agent] 正在根据人类审批稿生成全篇总结...",
+        "hallucination_grader_node": "⚖️ [Hallucination Guard] 正在进行事实一致性审查...",
+        "usefulness_grader_node": "🎯 [Usefulness Guard] 正在进行需求命中审查...",
+    }
+
+    for output in workflow_app.stream(
+        initial_state,
+        {"configurable": {"thread_id": resolved_thread_id}},
+        stream_mode="updates",
+    ):
+        for node_name, state_update in output.items():
+            current_state.update(state_update)
+            if status_callback and node_name in node_msg_map:
+                status_callback(node_msg_map[node_name])
+
+    return str(current_state.get("draft_summary", ""))
 
 
 def answer_question_at_timestamp(
@@ -368,7 +419,6 @@ def answer_question_at_timestamp(
             f"🎯 [Time Travel] 已定位目标窗口 {timestamp} ±{window_seconds}s，最近关键帧时间戳: {frame_time}"
         )
 
-    # 无 key 时提供可解释降级结果，避免接口报错
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     if not api_key:

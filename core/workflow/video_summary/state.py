@@ -96,6 +96,10 @@ class VideoSummaryState(TypedDict):
     
     # 中间态数据
     aggregated_chunk_insights: str  # 写入: chunk_aggregator_node；消费: fusion_drafter_node / hallucination_grader_node
+    human_edited_aggregated_insights: str  # 写入: human_gate_node / finalize API；消费: fusion_drafter_node
+    human_guidance: str  # 写入: human_gate_node / finalize API；消费: fusion_drafter_node
+    human_gate_status: str  # 写入: human_gate_node / finalize API；消费: route_after_human_gate
+    human_gate_reason: str  # 写入: human_gate_node；消费: 前端审批态展示
 
     # 分片执行中间态
     video_duration_seconds: int     # 写入: chunk_planner_node；消费: 主要用于观测和测试，当前主链路不直接依赖
@@ -111,7 +115,7 @@ class VideoSummaryState(TypedDict):
     reduce_debug_info: Dict         # 写入: map_dispatch_node / synthesis_barrier_node / chunk_aggregator_node；消费: 前端调试展示、测试断言、运行诊断
     
     # 输出与循环控制
-    draft_summary: str              # 写入: fusion_drafter_node；消费: hallucination_grader_node / usefulness_grader_node / summarize_video() 最终返回
+    draft_summary: str              # 写入: fusion_drafter_node；消费: hallucination_grader_node / usefulness_grader_node / finalize_summary() 返回
     
     # 质量审查与重写控制
     hallucination_score: str        # 写入: hallucination_grader_node；消费: route_after_hallucination / 前端告警文案

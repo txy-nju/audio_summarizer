@@ -12,33 +12,43 @@ def usefulness_grader_node(state: VideoSummaryState) -> dict:
 
     地位:
     - 位于 hallucination_grader_node 之后，是质量闭环的第二道防线。
-    - 在事实基本成立的前提下，检查草稿是否真正回应了用户的总结诉求。
+    - 在事实基本成立的前提下，检查草稿是否真正回应了用户诉求（含第二阶段人类指导）。
 
     任务:
-    - 对比 draft_summary 与 user_prompt。
+    - 对比 draft_summary 与 user_prompt/human_guidance。
     - 以 JSON Mode 返回是否满足用户需求。
     - 若偏题或遗漏重点，则输出定向修改指令并回流到成文节点。
-    - 当 user_prompt 为空或达到重写上限时直接放行。
+    - 当无审核要求或达到重写上限时直接放行。
 
     主要输入:
     - state["draft_summary"]
     - state["user_prompt"]
+    - state["human_guidance"]
     - state["revision_count"]
 
     主要输出:
     - usefulness_score: "yes" 或 "no"。
     - feedback_instructions: 供 fusion_drafter_node 使用的补充修改指令。
-    
+
     :param state: VideoSummaryState
     :return: dict 更新 usefulness_score 和 feedback_instructions
     """
     draft = state.get("draft_summary", "")
     user_prompt = state.get("user_prompt", "")
+    human_guidance = state.get("human_guidance", "")
     revision_count = state.get("revision_count", 0)
 
+    # user_prompt 与 human_guidance 共同构成有用性评分的审核要求。
+    review_requirements = []
+    if isinstance(user_prompt, str) and user_prompt.strip():
+        review_requirements.append(f"【用户原始总结侧重点】\n{user_prompt.strip()}")
+    if isinstance(human_guidance, str) and human_guidance.strip():
+        review_requirements.append(f"【人类审批补充指导】\n{human_guidance.strip()}")
+    review_requirements_text = "\n\n".join(review_requirements)
+
     # 1. 熔断与防死循环
-    # 如果草稿为空、达到重写上限，或者用户根本没有提供额外的特定要求，直接绿灯放行，绝不浪费 Token
-    if not draft or not user_prompt or not user_prompt.strip() or revision_count >= MAX_REVISIONS:
+    # 如果草稿为空、达到重写上限，或没有任何审核要求，直接放行，避免无效调用。
+    if not draft or revision_count >= MAX_REVISIONS or not review_requirements_text:
         return {"usefulness_score": "yes", "feedback_instructions": ""}
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -60,7 +70,7 @@ def usefulness_grader_node(state: VideoSummaryState) -> dict:
     )
 
     user_content = (
-        f"【用户的特定总结侧重点】：\n{user_prompt}\n\n"
+        f"【审核要求（原始需求 + 人类审批意见）】：\n{review_requirements_text}\n\n"
         f"【待评估的总结草稿】：\n{draft}"
     )
 

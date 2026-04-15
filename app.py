@@ -20,6 +20,9 @@ def _init_session_state() -> None:
         "active_thread_id": "",
         "restored_thread_id": "",
         "time_travel_answer": "",
+        "pending_review": {},
+        "editable_aggregated_insights": "",
+        "human_guidance": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -49,7 +52,7 @@ def main():
         base_url = st.text_input("OpenAI Base URL", value=default_base_url, help="如果您使用的是兼容 OpenAI 格式的中转 API，请在此修改地址。")
         
         # 选择视频来源
-        source_type = st.radio("🎬 Video Source (视频来源)", ("YouTube URL", "Local Upload"))
+        source_type = st.radio("🎬 Video Source (视频来源)", ("YouTube URL", "Local Upload")
         
         video_url = None
         uploaded_file = None
@@ -60,7 +63,8 @@ def main():
             uploaded_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi", "mkv"])
 
         st.markdown("---")
-        st.header("🎯 Summary Requirements (总结偏好)")
+        st.header("🎯 Summary Requirements (总结偏好)"
+)
         user_prompt = st.text_area(
             "您希望 AI 侧重总结什么内容？ (What would you like the AI to focus on?)", 
             placeholder="例如：请侧重于分析视频中产品演示的具体操作步骤和图表数据...",
@@ -68,7 +72,8 @@ def main():
         )
 
         st.markdown("---")
-        st.header("🧠 Concurrency (并行模式)")
+        st.header("🧠 Concurrency (并行模式)"
+)
         env_mode = os.getenv("CONCURRENCY_MODE", "threadpool").strip().lower()
         if env_mode not in SUPPORTED_CONCURRENCY_MODES:
             env_mode = "threadpool"
@@ -81,7 +86,8 @@ def main():
         )
 
         st.markdown("---")
-        st.header("🧵 Session (会话)")
+        st.header("🧵 Session (会话)"
+)
         restored_thread_id = st.text_input(
             "已有 Thread ID（可选）",
             value=st.session_state.get("restored_thread_id", st.session_state.get("active_thread_id", "")),
@@ -93,14 +99,15 @@ def main():
             st.session_state["active_thread_id"] = restored_thread_id.strip()
             st.success("当前会话 thread_id 已更新。")
 
-        process_button = st.button("🚀 Generate Summary (开始总结)")
+        process_button = st.button("🚀 Generate Review Draft (生成待审批稿)"
 
     # Main content area
     col1, col2 = st.columns(2)
 
     # 左侧显示视频
     with col1:
-        st.header("📺 Video")
+        st.header("📺 Video"
+)
         if source_type == "YouTube URL" and video_url:
             st.video(video_url)
         elif source_type == "Local Upload" and uploaded_file:
@@ -111,7 +118,7 @@ def main():
 
     # 右侧显示摘要
     with col2:
-        st.header("📝 Summary")
+        st.header("📝 Summary"
 
         active_thread_id = st.session_state.get("active_thread_id", "")
         if active_thread_id:
@@ -125,10 +132,11 @@ def main():
             elif source_type == "Local Upload" and not uploaded_file:
                 st.warning("Please upload a video file.")
             else:
-                summary = "" # 提前初始化以便在外部使用
+                review_package = {}
                 
                 # [状态回传体验跃升] 使用 st.status 作为后台运行日志的容器
-                with st.status("🔄 正在唤醒深度多模态解析引擎，请坐和放宽...", expanded=True) as status_container:
+                with st.status("🔄 正在唤醒深度多模态解析引擎，请坐和放宽...", expanded=True) as status_container
+:
                     progress_header = st.empty()
                     audio_progress_text = st.empty()
                     audio_progress_bar = st.progress(0)
@@ -197,7 +205,7 @@ def main():
                         
                         if source_type == "YouTube URL":
                             # 处理 URL
-                            summary = service.process_video_from_url(
+                            review_package = service.analyze_url_video(
                                 video_url, 
                                 user_prompt=user_prompt, 
                                 status_callback=update_status_ui,
@@ -206,7 +214,7 @@ def main():
                             )
                         else:
                             # 处理上传的文件
-                            summary = service.process_uploaded_video(
+                            review_package = service.analyze_uploaded_video(
                                 uploaded_file, 
                                 uploaded_file.name, 
                                 user_prompt=user_prompt, 
@@ -215,12 +223,18 @@ def main():
                                 concurrency_mode=concurrency_mode,
                             )
 
-                        st.session_state["current_summary"] = summary
+                        st.session_state["pending_review"] = review_package if isinstance(review_package, dict) else {}
+                        st.session_state["editable_aggregated_insights"] = str(
+                            st.session_state["pending_review"].get("editable_aggregated_chunk_insights", "")
+                        )
+                        st.session_state["human_guidance"] = str(
+                            st.session_state["pending_review"].get("human_guidance", "")
+                        )
                         st.session_state["active_thread_id"] = service.last_thread_id
                         st.session_state["restored_thread_id"] = service.last_thread_id
                         
                         status_container.update(
-                            label="✅ 全链路执行完毕！所有的细节都逃不过多智能体网络的火眼金睛。", 
+                            label="✅ 第一阶段完成：已生成待审批聚合稿，请在下方审批区确认后继续。", 
                             state="complete", 
                             expanded=False # 执行完毕后自动收起流水线日志，腾出屏幕空间
                         )
@@ -229,16 +243,79 @@ def main():
                         status_container.update(label="❌ 系统异常，流水线熔断", state="error", expanded=True)
                         st.error(f"处理过程中发生严重异常: {e}")
                         
-                # 【前端排版解耦】将最终的 Markdown 总结报告独立在外部主视觉区渲染
-                if summary:
-                    st.markdown(summary)
-                    st.balloons() # 加入一点庆祝彩蛋
+                pending = st.session_state.get("pending_review", {})
+                if isinstance(pending, dict) and pending:
+                    st.info("已到达人类审批步骤：你可以直接修改聚合稿，并补充额外指导，再生成最终总结。")
         else:
              cached_summary = st.session_state.get("current_summary", "")
              if cached_summary:
                  st.markdown(cached_summary)
              else:
                  st.markdown("Summary will appear here after processing...")
+
+        st.markdown("---")
+        st.header("🧑‍⚖️ Human Review (人工审批)"
+)
+        pending = st.session_state.get("pending_review", {})
+        if isinstance(pending, dict) and pending:
+            st.caption(f"审批会话 Thread ID: {pending.get('thread_id', '')}")
+            raw_aggregated = str(pending.get("aggregated_chunk_insights", ""))
+            if raw_aggregated:
+                with st.expander("查看原始聚合稿（只读）", expanded=False):
+                    st.markdown(raw_aggregated)
+
+            edited_aggregated = st.text_area(
+                "可编辑聚合稿（将作为第二阶段唯一证据输入）",
+                value=st.session_state.get("editable_aggregated_insights", ""),
+                height=260,
+            )
+            st.session_state["editable_aggregated_insights"] = edited_aggregated
+
+            human_guidance = st.text_area(
+                "额外 Human Guidance（可选）",
+                value=st.session_state.get("human_guidance", ""),
+                placeholder="例如：请先给执行摘要，再按时间线展开，重点写产品策略，不要写泛化结论。",
+                height=120,
+            )
+            st.session_state["human_guidance"] = human_guidance
+
+            finalize_button = st.button("✅ Approve And Generate Final Summary (审批并生成最终总结)")
+            if finalize_button:
+                thread_id_for_finalize = str(pending.get("thread_id", "")).strip() or st.session_state.get("active_thread_id", "")
+                if not thread_id_for_finalize:
+                    st.warning("缺少 thread_id，请先执行第一阶段。")
+                else:
+                    with st.status("🔄 正在执行第二阶段：人类审批后全篇总结与质量审查...", expanded=True) as finalize_status
+:
+                        def update_finalize_status(msg: str):
+                            finalize_status.update(label=msg)
+                            st.write(msg)
+
+                        try:
+                            service = VideoSummaryService(api_key=api_key, base_url=base_url)
+                            final_summary = service.finalize_summary(
+                                thread_id=thread_id_for_finalize,
+                                edited_aggregated_chunk_insights=edited_aggregated,
+                                human_guidance=human_guidance,
+                                status_callback=update_finalize_status,
+                            )
+                            st.session_state["current_summary"] = final_summary
+                            st.session_state["active_thread_id"] = service.last_thread_id
+                            st.session_state["restored_thread_id"] = service.last_thread_id
+                            st.session_state["pending_review"] = {}
+
+                            finalize_status.update(
+                                label="✅ 第二阶段完成：最终总结已生成。",
+                                state="complete",
+                                expanded=False,
+                            )
+                            st.markdown(final_summary)
+                            st.balloons()
+                        except Exception as e:
+                            finalize_status.update(label="❌ 第二阶段执行失败", state="error", expanded=True)
+                            st.error(f"审批后生成失败: {e}")
+        else:
+            st.info("暂无待审批稿。请先点击 Generate Review Draft。")
 
         st.markdown("---")
         st.header("⏱️ Time Travel Q&A")
@@ -265,14 +342,16 @@ def main():
             placeholder="例如：请解释这个时间点画面中的架构图在表达什么？",
         )
 
-        ask_button = st.button("🔎 Ask At Timestamp (时间旅行追问)")
+        ask_button = st.button("🔎 Ask At Timestamp (时间旅行追问)"
+)
         if ask_button:
             if not active_thread_id:
                 st.warning("当前没有可用的 thread_id，请先生成总结或绑定历史会话。")
             elif not time_travel_question.strip():
                 st.warning("请输入追问问题。")
             else:
-                with st.status("🕒 正在回溯历史状态并抽取目标时间窗证据...", expanded=True) as travel_status:
+                with st.status("🕒 正在回溯历史状态并抽取目标时间窗证据...", expanded=True) as travel_status
+:
                     def update_time_travel_status(msg: str):
                         travel_status.update(label=msg)
                         st.write(msg)

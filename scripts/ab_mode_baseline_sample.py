@@ -9,7 +9,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.workflow.api import summarize_video
+from core.workflow.api import analyze_video
 
 
 class _FakeWorkflowApp:
@@ -71,7 +71,7 @@ def _run_mode(mode: str, iterations: int = 30) -> Dict[str, Any]:
                     with patch("core.workflow.api.ENABLE_METRICS_LOGGING", True):
                         with patch("core.workflow.api.METRICS_SAMPLE_RATE", 1.0):
                             with patch("core.workflow.api.log_metric_event", side_effect=_collect_metric):
-                                summarize_video(
+                                analyze_video(
                                     transcript='{"segments": [{"start": 0, "end": 1, "text": "hello"}]}',
                                     keyframes=[
                                         {"time": "00:00", "image": "x"},
@@ -111,3 +111,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

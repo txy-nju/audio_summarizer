@@ -75,14 +75,24 @@ class TestEndToEndPipeline(unittest.TestCase):
             print("⏳ Processing... (Phase 1: Video Extraction & Whisper Transcription)")
             print("⏳ Processing... (Phase 2: Multimodal LangGraph Execution)")
             
-            # 3. 触发全链路处理（内部会经历：清空缓存 -> 保存视频 -> 提取帧与音轨 -> 并行分发 -> 评估审查重写 -> 返回）
-            final_summary = service.process_uploaded_video(
+            # 3. 第一阶段：生成待审批聚合稿
+            review_package = service.analyze_uploaded_video(
                 uploaded_file=video_file, 
                 original_filename=TEST_VIDEO_PATH.name,
                 user_prompt=user_prompt
             )
+
+        self.assertIsInstance(review_package, dict, "第一阶段应返回待审批包")
+        self.assertEqual(review_package.get("stage"), "pending_human_review")
+
+        # 4. 第二阶段：不额外改写聚合稿，走空 guidance 的默认审批降级路径
+        final_summary = service.finalize_summary(
+            thread_id=str(review_package.get("thread_id", "")),
+            edited_aggregated_chunk_insights=str(review_package.get("editable_aggregated_chunk_insights", "")),
+            human_guidance="",
+        )
             
-        # 4. 严酷断言检查
+        # 5. 严酷断言检查
         self.assertIsInstance(final_summary, str, "最终产物必须是字符串格式的 Markdown")
         self.assertTrue(len(final_summary) > 20, "总结内容过短，疑似流程中断或严重降级")
         
@@ -93,12 +103,13 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertNotIn("文本分析提取失败", final_summary, "文本分析节点崩溃")
         self.assertNotIn("视觉分析提取失败", final_summary, "视觉分析节点崩溃")
         
-        # 5. 落盘保存以供肉眼复核 (Artifacts Persistence)
+        # 6. 落盘保存以供肉眼复核 (Artifacts Persistence)
         output_path = self.output_dir / "e2e_final_summary.md"
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(f"# 全链路 E2E 测试结果 (End-to-End Output)\n\n")
             f.write(f"**Target Video:** {TEST_VIDEO_PATH.name}\n")
             f.write(f"**User Prompt:** {user_prompt}\n\n")
+            f.write(f"**Thread ID:** {review_package.get('thread_id', '')}\n\n")
             f.write(f"---\n\n")
             f.write(final_summary)
             

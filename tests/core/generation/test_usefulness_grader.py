@@ -99,6 +99,29 @@ class TestUsefulnessGraderNode(unittest.TestCase):
         self.assertIn("需求未满足", result["feedback_instructions"])
         self.assertIn("完全没有提到芯片性能", result["feedback_instructions"])
 
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123", "OPENAI_BASE_URL": "https://fake.url"})
+    @patch('core.workflow.video_summary.nodes.usefulness_grader.OpenAI')
+    def test_human_guidance_included_in_review_requirements(self, mock_openai_class):
+        """第二阶段：有 human_guidance 时，评分输入必须包含该指导信息。"""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({"score": "yes", "reason": ""})
+        mock_client.chat.completions.create.return_value = mock_response
+
+        state = self.valid_state.copy()
+        state["user_prompt"] = ""
+        state["human_guidance"] = "请优先检查是否响应了我对风险评估的强调。"  # type: ignore[index]
+
+        result = usefulness_grader_node(state)
+        self.assertEqual(result["usefulness_score"], "yes")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs.get("messages", [])
+        user_msg = [msg["content"] for msg in messages if msg["role"] == "user"][0]
+        self.assertIn("人类审批补充指导", user_msg)
+        self.assertIn("风险评估", user_msg)
+
     @patch('builtins.print')
     @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123"})
     @patch('core.workflow.video_summary.nodes.usefulness_grader.OpenAI')
