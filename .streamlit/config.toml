@@ -1,0 +1,6 @@
+[server]
+# 文件上传大小上限（单位：MB），默认 200MB
+maxUploadSize = 2048
+# WebSocket 单条消息大小上限（单位：MB），默认 200MB
+# 必须 >= maxUploadSize，否则大文件上传会抛 AxiosError: Network Error
+maxMessageSize = 2048

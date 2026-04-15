@@ -57,13 +57,29 @@ class MediaExtractor:
         cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
         return hist
 
+    @staticmethod
+    def _resolve_probe_fps(duration_seconds: float, requested_probe_fps: int) -> int:
+        """
+        根据视频时长动态调整探测频率：长视频降低探测频率以显著提速。
+        优先使用显式传入值（>0），否则走自动策略。
+        """
+        if requested_probe_fps and requested_probe_fps > 0:
+            return max(1, int(requested_probe_fps))
+
+        # 自动档位：<10min 用 5fps；10~30min 用 3fps；>=30min 用 1fps
+        if duration_seconds >= 1800:
+            return 1
+        if duration_seconds >= 600:
+            return 3
+        return 5
+
     def extract_frames(
         self,
         video_path: Path,
         interval: int = 2,
         max_interval: int = 60,
         threshold: float = 0.90,
-        probe_fps: int = 5,
+        probe_fps: int = 0,
     ) -> list[dict]:
         """
         基于场景检测（直方图对比）的智能关键帧提取，有效降低 Token 消耗并保留重要信息。
@@ -90,23 +106,32 @@ class MediaExtractor:
         frames = []
         frame_count = 0
 
-        # 探测步长：逐帧读取，但仅按固定频率执行场景判定与编码，降低热路径计算开销
-        safe_probe_fps = max(1, probe_fps)
+        total_frames = vidcap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if not total_frames or math.isnan(total_frames) or total_frames <= 0:
+            total_frames = 0.0
+        duration_seconds = (total_frames / fps) if total_frames > 0 else 0.0
+
+        # 探测步长：长视频降低 probe_fps；仅在探测帧 retrieve，非探测帧仅 grab 以降低解码开销
+        safe_probe_fps = self._resolve_probe_fps(duration_seconds, probe_fps)
         probe_stride = max(1, int(fps / safe_probe_fps))
         
         last_extracted_time = -1000.0  # 确保第0秒强制抽取
         last_hist = None
         
         while True:
-            success, image = vidcap.read()
-            if not success or image is None:
-                # 视频流中断、损坏或自然结束，安全退出
+            # grab: 仅推进解码器，不把图像拷贝到 Python 层，减少热路径开销
+            if not vidcap.grab():
                 break
 
-            # 跳过非探测帧，降低直方图比较与编码开销
+            # 跳过非探测帧：只 grab 不 retrieve，进一步减少跨语言内存拷贝和解码压力
             if probe_stride > 1 and frame_count % probe_stride != 0:
                 frame_count += 1
                 continue
+
+            success, image = vidcap.retrieve()
+            if not success or image is None:
+                # 视频流中断、损坏或自然结束，安全退出
+                break
                 
             current_time = frame_count / fps
             should_extract = False

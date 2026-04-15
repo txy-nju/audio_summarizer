@@ -99,18 +99,24 @@ class TestMediaExtractor(unittest.TestCase):
         scene_A = np.zeros((100, 100, 3), dtype=np.uint8) # 全黑
         scene_B = np.ones((100, 100, 3), dtype=np.uint8) * 255 # 全白
         
-        side_effect = []
+        retrieve_side_effect = []
         for i in range(total_frames):
             if i < 20:
-                side_effect.append((True, scene_A))
+                retrieve_side_effect.append((True, scene_A))
             else:
-                side_effect.append((True, scene_B))
-        side_effect.append((False, None))
-        
-        mock_cap_instance.read.side_effect = side_effect
+                retrieve_side_effect.append((True, scene_B))
+
+        mock_cap_instance.grab.side_effect = [True] * total_frames + [False]
+        mock_cap_instance.retrieve.side_effect = retrieve_side_effect
         mock_imencode.return_value = (True, np.array([1, 2, 3]))
         
-        frames = self.extractor.extract_frames(self.dummy_video_path, interval=1, max_interval=3, threshold=0.90)
+        frames = self.extractor.extract_frames(
+            self.dummy_video_path,
+            interval=1,
+            max_interval=3,
+            threshold=0.90,
+            probe_fps=10,
+        )
 
         expected_extracted_count = 2 # 0s 和 2s
         self.assertEqual(mock_imencode.call_count, expected_extracted_count)
@@ -128,7 +134,8 @@ class TestMediaExtractor(unittest.TestCase):
         mock_cap_instance.get.return_value = 10.0
 
         scene = np.zeros((100, 100, 3), dtype=np.uint8) 
-        mock_cap_instance.read.side_effect = [(True, scene), (False, None)]
+        mock_cap_instance.grab.side_effect = [True, False]
+        mock_cap_instance.retrieve.side_effect = [(True, scene)]
         mock_imencode.return_value = (True, np.array([1]))
 
         frames = self.extractor.extract_frames(self.dummy_video_path, interval=2, max_interval=60)
@@ -149,7 +156,8 @@ class TestMediaExtractor(unittest.TestCase):
             mock_cap_instance.get.return_value = bad_fps 
 
             scene = np.zeros((10, 10, 3), dtype=np.uint8) 
-            mock_cap_instance.read.side_effect = [(True, scene), (False, None)]
+            mock_cap_instance.grab.side_effect = [True, False]
+            mock_cap_instance.retrieve.side_effect = [(True, scene)]
             mock_imencode.return_value = (True, np.array([1]))
 
             frames = self.extractor.extract_frames(self.dummy_video_path)
@@ -167,9 +175,9 @@ class TestMediaExtractor(unittest.TestCase):
         mock_cap_instance.get.return_value = 10.0 
 
         scene = np.zeros((100, 100, 3), dtype=np.uint8) 
-        # 前 15 帧正常，第 16 帧突然断裂
-        side_effect = [(True, scene) for _ in range(15)] + [(False, None)]
-        mock_cap_instance.read.side_effect = side_effect
+        # 前 15 帧正常，第 16 帧 grab 失败中断
+        mock_cap_instance.grab.side_effect = [True for _ in range(15)] + [False]
+        mock_cap_instance.retrieve.side_effect = [(True, scene) for _ in range(15)]
         mock_imencode.return_value = (True, np.array([1]))
 
         # 使用 max_interval=1 迫使系统在 1s 处抽第二帧
@@ -192,7 +200,8 @@ class TestMediaExtractor(unittest.TestCase):
         mock_cap_instance.get.return_value = fps
 
         scene = np.zeros((10, 10, 3), dtype=np.uint8) 
-        mock_cap_instance.read.side_effect = [(True, scene), (True, scene), (False, None)]
+        mock_cap_instance.grab.side_effect = [True, True, False]
+        mock_cap_instance.retrieve.side_effect = [(True, scene), (True, scene)]
         mock_imencode.return_value = (True, np.array([1]))
 
         # 迫使兜底机制起效
@@ -211,11 +220,41 @@ class TestMediaExtractor(unittest.TestCase):
         mock_cap_instance.isOpened.return_value = True
         mock_cap_instance.get.return_value = 30.0
 
-        mock_cap_instance.read.return_value = (False, None)
+        mock_cap_instance.grab.return_value = False
 
         frames = self.extractor.extract_frames(self.dummy_video_path)
 
         self.assertEqual(frames, [], "首帧都读不到时，不应崩溃，必须兜底返回空列表")
+
+    @patch('core.extraction.infrastructure.extractor.cv2.imencode')
+    @patch('core.extraction.infrastructure.extractor.cv2.VideoCapture')
+    def test_extract_frames_auto_probe_fps_for_long_video(self, mock_video_capture, mock_imencode):
+        """长视频自动档应降到 1fps 探测，减少 retrieve 次数。"""
+        mock_cap_instance = MagicMock()
+        mock_video_capture.return_value = mock_cap_instance
+        mock_cap_instance.isOpened.return_value = True
+
+        # 30min, 30fps -> 54000 frames，自动档应取 1fps => stride=30
+        fps = 30.0
+        total_frames = 54000.0
+
+        def fake_get(prop_id):
+            if prop_id == 5:  # cv2.CAP_PROP_FPS
+                return fps
+            if prop_id == 7:  # cv2.CAP_PROP_FRAME_COUNT
+                return total_frames
+            return 0.0
+
+        mock_cap_instance.get.side_effect = fake_get
+        mock_cap_instance.grab.side_effect = [True] * 60 + [False]
+        scene = np.zeros((10, 10, 3), dtype=np.uint8)
+        mock_cap_instance.retrieve.side_effect = [(True, scene), (True, scene)]
+        mock_imencode.return_value = (True, np.array([1]))
+
+        _ = self.extractor.extract_frames(self.dummy_video_path, interval=1, max_interval=100)
+
+        # 0 和 30 帧命中探测点，retrieve 调用应为 2 次（其余帧仅 grab）
+        self.assertEqual(mock_cap_instance.retrieve.call_count, 2)
 
 if __name__ == '__main__':
     unittest.main()

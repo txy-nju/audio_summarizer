@@ -134,6 +134,45 @@ class TestChunkPlannerNode(unittest.TestCase):
         self.assertEqual(result["chunk_plan"][0]["transcript_segment_indexes"], [0])
         self.assertEqual(result["chunk_plan"][1]["transcript_segment_indexes"], [1])
 
+    def test_planner_equivalence_between_single_and_merged_transcript(self):
+        """单文件 verbose_json 与大文件合并后的 verbose_json 应得到一致的分片规划。"""
+        keyframes = [
+            {"time": "00:10", "image": "x"},
+            {"time": "00:50", "image": "y"},
+        ]
+
+        single_transcript = (
+            '{"task":"transcribe","language":"en","duration":70,'
+            '"text":"first second",'
+            '"segments":['
+            '{"id":0,"start":0.0,"end":8.0,"text":"first"},'
+            '{"id":1,"start":45.0,"end":55.0,"text":"second"}'
+            ']}'
+        )
+
+        merged_transcript = (
+            '{"task":"transcribe","language":"en","duration":70,'
+            '"text":"first second",'
+            '"segments":['
+            '{"id":0,"start":0.0,"end":8.0,"text":"first"},'
+            '{"id":1,"start":45.0,"end":55.0,"text":"second"}'
+            ']}'
+        )
+
+        with patch("core.workflow.video_summary.planner.chunk_planner.MAP_CHUNK_SECONDS", 60):
+            single_result = chunk_planner_node({"transcript": single_transcript, "keyframes": keyframes})  # type: ignore
+            merged_result = chunk_planner_node({"transcript": merged_transcript, "keyframes": keyframes})  # type: ignore
+
+        self.assertEqual(single_result["video_duration_seconds"], merged_result["video_duration_seconds"])
+        self.assertEqual(len(single_result["chunk_plan"]), len(merged_result["chunk_plan"]))
+
+        for left, right in zip(single_result["chunk_plan"], merged_result["chunk_plan"]):
+            self.assertEqual(left["chunk_id"], right["chunk_id"])
+            self.assertEqual(left["start_sec"], right["start_sec"])
+            self.assertEqual(left["end_sec"], right["end_sec"])
+            self.assertEqual(left["keyframe_indexes"], right["keyframe_indexes"])
+            self.assertEqual(left["transcript_segment_indexes"], right["transcript_segment_indexes"])
+
 
 if __name__ == "__main__":
     unittest.main()
