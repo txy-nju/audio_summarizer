@@ -15,11 +15,11 @@ from core.workflow.video_summary.nodes.chunk_synthesizer import chunk_synthesize
 from core.workflow.video_summary.nodes.chunk_aggregator import chunk_aggregator_node
 from core.workflow.video_summary.nodes.fusion_drafter import fusion_drafter_node
 
-# [Self-RAG 架构升级] 导入新拆分的双重独立审查节点
+# 质量审查节点
 from core.workflow.video_summary.nodes.hallucination_grader import hallucination_grader_node
 from core.workflow.video_summary.nodes.usefulness_grader import usefulness_grader_node
 
-# [Self-RAG 架构升级] 导入新的多级路控体系与消除魔法字符串的常量
+# 质量审查路由常量与路由函数
 from core.workflow.video_summary.edges.router import (
     route_after_hallucination, 
     route_after_usefulness,
@@ -49,7 +49,7 @@ def _add_chunk_pipeline_for_threadpool(workflow: StateGraph) -> None:
 
 def _add_chunk_pipeline_for_send_api_scaffold(workflow: StateGraph) -> None:
     """
-    方案B阶段4试点：音频和视觉分支均切换为 Send API fan-out。
+    Send API 模式：音频和视觉分支采用图级 fan-out，融合阶段在 barrier 后二次分发。
     """
     workflow.add_edge(START, "chunk_planner_node")
     workflow.add_edge("chunk_planner_node", "map_dispatch_node")
@@ -57,7 +57,7 @@ def _add_chunk_pipeline_for_send_api_scaffold(workflow: StateGraph) -> None:
     workflow.add_conditional_edges("map_dispatch_node", route_audio_send_tasks)
     workflow.add_conditional_edges("map_dispatch_node", route_vision_send_tasks)
 
-    # 方案 A：先汇聚到 barrier，再触发二阶段 synthesis fan-out。
+    # 先汇聚到 barrier，再触发 synthesis fan-out。
     workflow.add_edge("chunk_audio_worker_node", "synthesis_barrier_node")
     workflow.add_edge("chunk_vision_worker_node", "synthesis_barrier_node")
     workflow.add_conditional_edges("synthesis_barrier_node", route_synthesis_send_tasks)
@@ -67,14 +67,13 @@ def _add_chunk_pipeline_for_send_api_scaffold(workflow: StateGraph) -> None:
 
 def build_video_summary_graph(checkpointer: Any = None, concurrency_mode: str = CONCURRENCY_MODE_THREADPOOL) -> Any:
     """
-    基于 《多模态视频内容总结 AI 工作流架构设计书》 升级构建的 LangGraph 执行拓扑。
-    彻底抛弃了脆弱的单线流转，正式升级为带有 Self-RAG 反思闭环的 Multi-Agent 架构。
+    构建视频总结工作流图。
+    主干流程为：分片规划 -> 音频/视觉分析 -> 分片融合 -> 聚合成文 -> 质量审查闭环。
     """
-    # 1. 初始化 StateGraph，绑定强类型的状态模式 (Schema)
+    # 1. 初始化 StateGraph，绑定状态结构
     workflow = StateGraph(VideoSummaryState) # type: ignore
 
-    # 2. 注册智能体 Worker 节点 (Nodes)
-    # 使用 type: ignore 来抑制因 LangGraph 底层复杂泛型而产生的静态推断警告
+    # 2. 注册节点
     workflow.add_node("chunk_planner_node", chunk_planner_node) # type: ignore
     workflow.add_node("map_dispatch_node", map_dispatch_node) # type: ignore
     workflow.add_node("synthesis_barrier_node", synthesis_barrier_node) # type: ignore
@@ -87,45 +86,43 @@ def build_video_summary_graph(checkpointer: Any = None, concurrency_mode: str = 
     workflow.add_node("chunk_aggregator_node", chunk_aggregator_node) # type: ignore
     workflow.add_node("fusion_drafter_node", fusion_drafter_node) # type: ignore
     
-    # 注册双重防护栏评估节点 (Evaluators)
+    # 注册质量审查节点
     workflow.add_node("hallucination_grader_node", hallucination_grader_node) # type: ignore
     workflow.add_node("usefulness_grader_node", usefulness_grader_node) # type: ignore
 
-    # 3. 编排拓扑连线 (Edges)
-    # 3.1 方案B阶段1：根据并发模式选择图骨架（默认 threadpool）
+    # 3. 编排拓扑连线
     normalized_mode = (concurrency_mode or CONCURRENCY_MODE_THREADPOOL).strip().lower()
     if normalized_mode == CONCURRENCY_MODE_SEND_API:
         _add_chunk_pipeline_for_send_api_scaffold(workflow)
     else:
         _add_chunk_pipeline_for_threadpool(workflow)
 
-    # 3.3 迭代 C：先聚合分片洞察，再交由 Drafter 成文
+    # 分片结果先聚合，再交由成文节点生成草稿
     workflow.add_edge("chunk_synthesizer_node", "chunk_aggregator_node")
     workflow.add_edge("chunk_aggregator_node", "fusion_drafter_node")
 
-    # 3.5 组装完毕后，立刻进入第一道质量防线：检查是否无中生有 (幻觉)
+    # 草稿生成后依次经过幻觉审查和有用性审查
     workflow.add_edge("fusion_drafter_node", "hallucination_grader_node")
 
-    # 3.6 路由分流 1 (防幻觉路由)：若有幻觉则打回重写，若无则推进到第二关
+    # 幻觉审查：若失败则回到成文节点重写
     workflow.add_conditional_edges(
         "hallucination_grader_node",
         route_after_hallucination,
         {
-            ROUTE_HAS_HALLUCINATION: "fusion_drafter_node",  # 存在幻觉，驳回重组
-            ROUTE_NO_HALLUCINATION: "usefulness_grader_node" # 事实正确，放行至第二关
+            ROUTE_HAS_HALLUCINATION: "fusion_drafter_node",
+            ROUTE_NO_HALLUCINATION: "usefulness_grader_node"
         }
     )
 
-    # 3.7 路由分流 2 (防偏题路由)：若偏题则打回重写，若完美则大功告成
+    # 有用性审查：若失败则回到成文节点重写
     workflow.add_conditional_edges(
         "usefulness_grader_node",
         route_after_usefulness,
         {
-            ROUTE_NOT_USEFUL: "fusion_drafter_node",  # 偏离用户需求，驳回重组
-            ROUTE_USEFUL: END                         # 满足一切高压线，正式交付！
+            ROUTE_NOT_USEFUL: "fusion_drafter_node",
+            ROUTE_USEFUL: END
         }
     )
 
-    # 4. 编译校验图实例并返回可执行工作流
-    # compile() 返回的是 CompiledStateGraph，具有 .invoke 和 .stream 方法
+    # 4. 编译并返回可执行工作流
     return workflow.compile(checkpointer=checkpointer)

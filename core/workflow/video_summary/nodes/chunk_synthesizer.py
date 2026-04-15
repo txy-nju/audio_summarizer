@@ -78,6 +78,27 @@ def _process_single_chunk_synthesis(
 
 
 def chunk_synthesizer_node(state: VideoSummaryState) -> dict:
+    """
+    分片融合节点。
+
+    地位:
+    - 位于音频分支和视觉分支之后，是分片级多模态汇合点。
+    - 输出的 chunk_summary 会被后续 aggregator 作为更高层的证据摘要使用。
+
+    任务:
+    - 将同一 chunk 的 audio_insights 与 vision_insights 融合成 chunk_summary。
+    - 在 threadpool 模式下并行处理全部 chunk。
+    - 在 send_api 模式下仅负责顺序重建和结果透传，避免重复计算。
+
+    主要输入:
+    - state["chunk_plan"]
+    - state["chunk_results"]
+    - state["user_prompt"]
+    - state["concurrency_mode"]
+
+    主要输出:
+    - chunk_results: 为每个 chunk 补充 chunk_summary 和 synthesizer 延迟信息。
+    """
     concurrency_mode = str(state.get("concurrency_mode", "threadpool")).strip().lower()
     if concurrency_mode == "send_api":
         # send_api 路径下，分片融合由 chunk_synthesizer_worker_node 完成。
@@ -156,7 +177,21 @@ def chunk_synthesizer_node(state: VideoSummaryState) -> dict:
 def chunk_synthesizer_worker_node(state: VideoSummaryState) -> dict:
     """
     Send API 路径下的单分片融合 worker。
-    每次仅处理一个 current_synthesis_chunk。
+
+    地位:
+    - 是 chunk_synthesizer_node 的单分片版本，用于图级 fan-out。
+
+    任务:
+    - 读取单个 chunk 已完成的音频与视觉洞察。
+    - 生成当前 chunk 的 chunk_summary。
+
+    主要输入:
+    - state["current_synthesis_chunk"]
+    - state["current_synthesis_base_item"]
+    - state["user_prompt"]
+
+    主要输出:
+    - chunk_results: 长度为 1 的列表，包含当前 chunk 的融合结果。
     """
     current_chunk = state.get("current_synthesis_chunk", {})
     if not isinstance(current_chunk, dict):

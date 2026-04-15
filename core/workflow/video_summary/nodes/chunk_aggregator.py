@@ -28,8 +28,25 @@ def _truncate(text: str, limit: int) -> str:
 
 def chunk_aggregator_node(state: VideoSummaryState) -> dict:
     """
-    将上游 n 个 chunk_results 按计划顺序聚合为单字段文本，
-    供 fusion_drafter_node 进行最终总结成文。
+    分片聚合节点。
+
+    地位:
+    - 位于分片融合之后、全局成文之前，是从“分片级证据”过渡到“全局草稿”的桥梁。
+
+    任务:
+    - 按 chunk_plan 顺序整理 chunk_results。
+    - 将 chunk_summary、audio_insights、vision_insights 聚合为单段 Markdown 文本。
+    - 对过长的聚合文本执行截断，保护后续节点上下文窗口。
+    - 记录 dropped_chunks 等聚合阶段元数据。
+
+    主要输入:
+    - state["chunk_plan"]
+    - state["chunk_results"]
+    - state["user_prompt"]
+
+    主要输出:
+    - aggregated_chunk_insights: 供 fusion_drafter_node 消费的全局证据底稿。
+    - reduce_debug_info: 聚合阶段统计信息。
     """
     chunk_results = state.get("chunk_results", [])
     chunk_plan = state.get("chunk_plan", [])

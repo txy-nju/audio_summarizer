@@ -48,15 +48,14 @@ def summarize_video(
     concurrency_mode: str = "",
 ) -> str:
     """
-    外部调用接口：启动多模态视频总结工作流。
-    该接口严格遵守架构契约的分层设计，对外屏蔽了 State 和 Graph 的复杂性。
-    引入了基于 stream() 的流式状态透传，用于向前端 UI 进行全链路极客风的进度流水播报。
+    启动视频总结工作流并返回最终总结文本。
+    该函数负责编排 graph、注入 checkpoint/thread_id，并通过 stream() 向前端透传进度。
     
     :param transcript: 视频语音识别出的完整文本
     :param keyframes: 视频关键帧列表，格式必须为 [{"time": "...", "image": "..."}]
     :param user_prompt: 用户的特殊总结侧重点要求
     :param status_callback: 允许回调注入状态字符串以供前端展示
-    :return: 最终生成的总结内容 (即工作流末态的 draft_summary)
+    :return: 最终生成的总结内容（工作流末态的 draft_summary）
     """
     if status_callback:
         status_callback("⚙️ [LangGraph 初始化] 正在编排多智能体认知状态机网络...")
@@ -65,7 +64,7 @@ def summarize_video(
     metrics_logger = setup_logger("video_summarizer.metrics")
     run_started_at = time.perf_counter()
 
-    # 1. 获取已编译的工作流引擎（第一阶段：接入 checkpointer）
+    # 1. 构建工作流实例并解析本次执行配置
     checkpointer = create_checkpointer(CHECKPOINT_BACKEND, CHECKPOINT_DB_URL)
     resolved_mode = resolve_concurrency_mode(concurrency_mode or CONCURRENCY_MODE)
     workflow_app = build_video_summary_graph(
@@ -96,7 +95,7 @@ def summarize_video(
             user_prompt_chars=len(user_prompt),
         )
     
-    # 2. 构造符合 VideoSummaryState 契约的初始状态
+    # 2. 组装初始状态
     initial_state = {
         "transcript": transcript,
         "keyframes": keyframes,
@@ -111,17 +110,14 @@ def summarize_video(
         "revision_count": 0
     }
     
-    # 3. [架构级革命] 将阻塞式的 invoke 升级为分布式的 stream，并截获中间局部全量状态
+    # 3. 使用 stream() 获取节点更新并实时刷新前端状态
     if status_callback:
         status_callback("⚡ [引擎点火] 工作流正式启动，并行并发拆解多模态任务中...")
 
-    # Node 名称与前端友好播报信息的极客风映射表
+    # 节点名称到前端状态文案的映射
     node_msg_map = {
-        # 迭代 A & B：分片计划与微智能体群 (Plan Checker + Chunk Micro-Agents)
         "chunk_planner_node": "📋 [Plan Checker] 正在以时间戳为锚点，将视频逻辑分割成多个 120 秒粒度的分片任务...",
         "map_dispatch_node": "🗺️ [Dispatcher] 正在为微智能体群编排分片执行配方，准备发起并行实时处理...",
-        
-        # 迭代 B 并行微智能体群 (Micro-Agent Swarm)
         "chunk_audio_node": "🎧 [Chunk Audio Micro-Agent] 微线程 1&2&3 并行：正在对每个 120s 分片逐一进行语音深度梳理与查证搜索...",
         "chunk_audio_worker_node": "🎧 [Chunk Audio Send Worker] 图级 fan-out：正在处理单分片音频洞察...",
         "chunk_vision_node": "📸 [Chunk Vision Micro-Agent] 并行通道：正同步对应时间片的关键帧进行视觉特征提取与图表解析...",
@@ -129,8 +125,6 @@ def summarize_video(
         "synthesis_barrier_node": "🧱 [Synthesis Barrier] 正在等待音视频分片证据全部汇聚，准备进入融合分发路由...",
         "chunk_synthesizer_worker_node": "⚡ [Chunk Synthesizer Send Worker] 图级 fan-out：正在处理单分片融合总结...",
         "chunk_synthesizer_node": "⚡ [Chunk Synthesizer] 并行汇聚：将分片级音视频洞察实时融合为中间层 chunk_summary...",
-        
-        # 全局整理层 (Global Aggregation & Draft)
         "chunk_aggregator_node": "🧾 [Chunk Aggregator] 正在按时间线整合 n 个分片洞察，生成统一证据底稿...",
         "fusion_drafter_node": "🧩 [Synthesizer Agent] 正在基于聚合证据底稿，起草最终报告...",
         "hallucination_grader_node": "⚖️ [Hallucination Guard] 启动 SSCD 时空对抗防御网，正在对草稿中的每一个数据源进行反向核查...",
@@ -169,7 +163,7 @@ def summarize_video(
         }
         status_callback(f"[[PROGRESS]]{json.dumps(payload, ensure_ascii=False)}")
 
-    # 维护一个局部字典缓冲区，用来组装流星碎片式返回的状态片段
+    # 维护一个局部状态缓冲区，逐步拼装 stream() 返回的增量状态
     current_state = initial_state.copy()
     previous_event_at = run_started_at
     node_event_counts: Dict[str, int] = {}
@@ -179,7 +173,7 @@ def summarize_video(
     total_chunks = 0
     last_progress_signature: tuple[int, int, int, int] = (-1, -1, -1, -1)
     
-    # stream_mode="updates" 会在每一个图节点执行完毕后，将它吐出的局部更新 `dict` yield 出来
+    # stream_mode="updates" 会在每个节点完成后产出该节点的状态增量
     for output in workflow_app.stream(
         initial_state,
         {"configurable": {"thread_id": resolved_thread_id}},
@@ -190,7 +184,7 @@ def summarize_video(
             since_previous_ms = int((event_now - previous_event_at) * 1000)
             node_event_counts[node_name] = node_event_counts.get(node_name, 0) + 1
 
-            # 实时更新缓冲区状态
+            # 实时更新本地状态缓冲区
             current_state.update(state_update)
 
             chunk_plan = current_state.get("chunk_plan", [])
@@ -248,18 +242,18 @@ def summarize_video(
                 )
             previous_event_at = event_now
             
-            # 若前端注册了回调函数，且该节点是我们关注的核心智能体，则向外抛出事件信号
+            # 对核心节点向前端发送更友好的状态文案
             if status_callback and node_name in node_msg_map:
                 msg = node_msg_map[node_name]
                 
-                # [微智能体群特殊播报] 分片合成完成时，动态追加汇聚确认信号
+                # 分片融合完成后附带汇聚信息
                 if node_name == "chunk_synthesizer_node":
                     chunk_results = current_state.get("chunk_results", [])
                     if isinstance(chunk_results, list) and chunk_results:
                         num_chunks = len(chunk_results)
                         msg = f"{msg}\n✅ [微智能体群汇聚] 已完成 {num_chunks} 个分片的并行深度分析，成果已交付全局融合层..."
                 
-                # 为核心草稿生成节点动态加入轮次重写标识与分片结合上下文
+                # 为成文节点补充轮次和分片数量信息
                 if node_name == "fusion_drafter_node":
                     rev = current_state.get("revision_count", 1)
                     chunk_results = current_state.get("chunk_results", [])
@@ -275,7 +269,7 @@ def summarize_video(
                 
                 status_callback(msg)
                 
-                # [状态透传高光时刻]：若探测到防线被击穿并下达了打回重写指令，在此专门向前端界面抛出夺目的红色报警日志
+                # 当质量审查失败时，额外提示将进入重写
                 if node_name == "hallucination_grader_node" and current_state.get("hallucination_score") == "yes":
                     status_callback(f"🚨 [系统熔断] 幻觉评分器刚刚挫败了一次模型捏造事实的行为！正在带参打回重建...")
                 elif node_name == "usefulness_grader_node" and current_state.get("usefulness_score") == "no":
@@ -290,7 +284,7 @@ def summarize_video(
             stage="finished",
         )
 
-    # 4. 抽取对外唯一关心的最终形态产物
+    # 4. 返回最终 summary
     summary = current_state.get("draft_summary", "")
 
     if metrics_enabled:
@@ -325,8 +319,8 @@ def answer_question_at_timestamp(
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> str:
     """
-    阶段2入口：基于 checkpoint 的时间旅行追问。
-    输入 thread_id + 时间戳 + 追问问题，返回带证据约束的回答。
+    基于 checkpoint 的时间旅行追问入口。
+    输入 thread_id、时间戳和问题，返回带证据约束的回答。
     """
     if not question or not question.strip():
         raise ValueError("question is required")

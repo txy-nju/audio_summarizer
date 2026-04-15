@@ -8,9 +8,26 @@ MAX_REVISIONS = 2
 
 def hallucination_grader_node(state: VideoSummaryState) -> dict:
     """
-    [Self-RAG 架构升级] 幻觉评分器 (Hallucination Grader)。
-    专项对抗大模型在长上下文中的无中生有。
-    采用“时空语义对比解码 (SSCD)”原则，强制大模型核对草稿中的每一个事实是否均来源于提取层的源数据。
+    幻觉审查节点。
+
+    地位:
+    - 位于 fusion_drafter_node 之后，是质量闭环的第一道防线。
+    - 负责判断草稿是否超出了上游证据范围，决定是否回到成文节点重写。
+
+    任务:
+    - 对比 draft_summary 与 aggregated_chunk_insights。
+    - 以 JSON Mode 返回是否存在 hallucination。
+    - 若发现问题，则输出可直接用于重写的 feedback_instructions。
+    - 在达到 MAX_REVISIONS 或草稿为空时主动熔断放行，避免死循环。
+
+    主要输入:
+    - state["draft_summary"]
+    - state["aggregated_chunk_insights"]
+    - state["revision_count"]
+
+    主要输出:
+    - hallucination_score: "yes" 或 "no"。
+    - feedback_instructions: 供 fusion_drafter_node 使用的纠错指令。
     
     :param state: VideoSummaryState
     :return: dict 更新 hallucination_score 和 feedback_instructions

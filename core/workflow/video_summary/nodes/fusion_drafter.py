@@ -4,10 +4,26 @@ from core.workflow.video_summary.state import VideoSummaryState
 
 def fusion_drafter_node(state: VideoSummaryState) -> dict:
     """
-    核心的“成文节点” (Drafter)。
-    接收上游聚合节点输出的 aggregated_chunk_insights，
-    负责将结构化证据整理为最终高质量总结。
-    [Self-RAG 升级]: 如果存在反馈意见 (feedback_instructions)，则必须结合修改意见重新生成修正版草稿。
+    全局成文节点。
+
+    地位:
+    - 位于分片聚合之后，是生成最终 draft_summary 的核心节点。
+    - 同时也是质量闭环中的“被打回重写”节点。
+
+    任务:
+    - 读取 aggregated_chunk_insights 并生成完整 Markdown 总结。
+    - 结合 user_prompt 控制总结重点。
+    - 若 feedback_instructions 非空，则按审查意见进行定向重写。
+
+    主要输入:
+    - state["aggregated_chunk_insights"]
+    - state["user_prompt"]
+    - state["feedback_instructions"]
+    - state["revision_count"]
+
+    主要输出:
+    - draft_summary: 当前轮次生成的总结草稿。
+    - revision_count: 重写轮次递增后的值。
     
     :param state: VideoSummaryState
     :return: dict 包含更新的 draft_summary 和增加的 revision_count
@@ -37,7 +53,7 @@ def fusion_drafter_node(state: VideoSummaryState) -> dict:
         "3. 📝 专业排版规范：输出必须使用易于阅读的 Markdown 语法。建议包含：【内容导读】、【核心内容解析】、【关键结论】、【总结与建议】等模块。"
     )
 
-    # 3. [Self-RAG 升级] 双重评分机制介入
+    # 若上游审查节点给出了反馈，则在本轮生成中附带修改约束
     if feedback_instructions and feedback_instructions.strip():
         system_prompt += (
             f"\n\n⚠️ 【重要警告：这是第 {current_count + 1} 次重写草稿】\n"

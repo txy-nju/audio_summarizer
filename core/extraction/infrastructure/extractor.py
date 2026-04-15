@@ -82,14 +82,15 @@ class MediaExtractor:
         probe_fps: int = 0,
     ) -> list[dict]:
         """
-        基于场景检测（直方图对比）的智能关键帧提取，有效降低 Token 消耗并保留重要信息。
+        基于场景检测的关键帧提取。
+        通过自适应 probe_fps、grab/retrieve 采样和最大间隔兜底，在速度与信息覆盖之间取平衡。
         
         :param video_path: 视频路径
-        :param interval: 两次抽帧的最小时间间隔（秒），即防抖间隔 (兼容旧代码中的 interval)
+        :param interval: 两次抽帧的最小时间间隔（秒）
         :param max_interval: 强制抽帧的最大时间间隔（秒），用于防断层兜底
         :param threshold: 直方图相关性阈值，低于该值则认为场景发生突变
-        :param probe_fps: 探测频率（每秒参与场景判定的帧数）。值越小越快，但可能降低突变检测灵敏度
-        :return: 符合 VideoSummaryState 契约的字典列表
+        :param probe_fps: 探测频率；传入 0 时按视频时长自动选择
+        :return: 关键帧字典列表，元素包含 time，且根据配置包含 image 或 frame_file
         """
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -144,10 +145,10 @@ class MediaExtractor:
             else:
                 time_since_last = current_time - last_extracted_time
                 
-                # 条件 2：是否达到最大间隔兜底（防止静止画面太长导致大模型时空断层）
+                # 条件 2：达到最大间隔时强制抽帧，避免长时间没有视觉证据
                 if time_since_last >= max_interval:
                     should_extract = True
-                # 条件 3：距离上次抽帧超过防抖阈值，且画面发生剧变
+                # 条件 3：达到最小间隔后，仅在场景明显变化时抽帧
                 elif time_since_last >= interval:
                     current_hist = self._calc_histogram(image)
                     correlation = cv2.compareHist(last_hist, current_hist, cv2.HISTCMP_CORREL)
@@ -183,7 +184,6 @@ class MediaExtractor:
                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                 
                 # 计算时间戳并格式化为 HH:MM:SS 或 MM:SS
-                # [防御性修复]: 避免浮点数精度丢失导致时间戳被截断 (如 3664.9999999 被 int() 截断为 3664)
                 total_seconds = int(round(current_time))
                 hours, remainder = divmod(total_seconds, 3600)
                 minutes, seconds = divmod(remainder, 60)
@@ -202,7 +202,7 @@ class MediaExtractor:
                         frame_file_path.write_bytes(buffer.tobytes())
                         frame_payload["frame_file"] = frame_filename
                     except Exception:
-                        # 文件落盘失败时回退内联，保证主流程不中断。
+                        # 文件落盘失败时回退为内联图片，保证主流程不中断。
                         frame_payload["image"] = jpg_as_text
 
                     if KEYFRAME_REFERENCE_INCLUDE_INLINE_IMAGE:

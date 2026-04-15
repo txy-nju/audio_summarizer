@@ -6,7 +6,25 @@ from core.workflow.video_summary.state import VideoSummaryState
 
 def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
     """
-    迭代 A：构建分发元信息，不改变现有主流程分析语义。
+    分发准备节点。
+
+    地位:
+    - 位于 chunk_planner_node 之后，是并行执行前的轻量级准备层。
+    - 不直接产出业务洞察，而是补齐调度和观测所需的元信息。
+
+    任务:
+    - 初始化 chunk_retry_count。
+    - 标记 dispatch_strategy、chunk_count 等调试字段。
+    - 透传已有的 chunk_results，供后续节点继续累积结果。
+
+    主要输入:
+    - state["chunk_plan"]: 上游规划出的分片计划。
+    - state["chunk_results"]: 已存在的分片结果（恢复会话或重入场景）。
+
+    主要输出:
+    - chunk_retry_count: 每个 chunk 的重试计数基座。
+    - reduce_debug_info: 分发策略和规模信息。
+    - chunk_results: 原样透传。
     """
     chunk_plan = state.get("chunk_plan", [])
     if not isinstance(chunk_plan, list):
@@ -47,9 +65,24 @@ def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
 
 def synthesis_barrier_node(state: VideoSummaryState) -> Dict[str, Any]:
     """
-    方案 A：中间汇聚门。
-    - 不做业务计算，只透传并补充门控元信息
-    - 用于表达“音视频分片结果已汇聚，准备进入 synthesis 二次分发”
+    Send API 路径下的中间汇聚节点。
+
+    地位:
+    - 位于 audio/vision worker 之后，synthesis worker 之前。
+    - 负责把并行分析阶段与并行融合阶段分隔开，形成显式 barrier。
+
+    任务:
+    - 检查每个 chunk 是否同时具备 audio_insights 和 vision_insights。
+    - 记录 synthesis_ready 等门控状态。
+    - 不做业务推理，只做条件汇聚与状态透传。
+
+    主要输入:
+    - state["chunk_plan"]
+    - state["chunk_results"]
+
+    主要输出:
+    - reduce_debug_info: 汇聚完成度与是否可进入 synthesis fan-out。
+    - chunk_results: 原样透传。
     """
     reduce_debug_info = state.get("reduce_debug_info", {})
     if not isinstance(reduce_debug_info, dict):
@@ -90,7 +123,7 @@ def synthesis_barrier_node(state: VideoSummaryState) -> Dict[str, Any]:
 
 def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
     """
-    Send API 试点：仅对音频分支执行图级 fan-out。
+    为音频分析阶段生成 Send API 派发任务。
     """
     concurrency_mode = str(state.get("concurrency_mode", "threadpool")).strip().lower()
     if concurrency_mode != "send_api":
@@ -134,7 +167,7 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
 
 def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
     """
-    Send API 试点：对视觉分支执行图级 fan-out。
+    为视觉分析阶段生成 Send API 派发任务。
     """
     concurrency_mode = str(state.get("concurrency_mode", "threadpool")).strip().lower()
     if concurrency_mode != "send_api":
@@ -180,8 +213,9 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
 
 def route_synthesis_send_tasks(state: VideoSummaryState) -> List[Send]:
     """
-    方案 A：二阶段 fan-out。
-    仅在 send_api 模式下，且 audio/vision 所有 chunk 都整理完成后，才分发 synthesis 任务。
+    为分片融合阶段生成 Send API 派发任务。
+
+    仅在 send_api 模式下，且所有 chunk 已同时具备音频和视觉洞察时才触发。
     """
     concurrency_mode = str(state.get("concurrency_mode", "threadpool")).strip().lower()
     if concurrency_mode != "send_api":

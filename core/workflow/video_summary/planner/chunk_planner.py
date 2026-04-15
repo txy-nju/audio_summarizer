@@ -155,7 +155,25 @@ def _build_transcript_intervals(segments: List[Dict], chunks: List[Dict]) -> Lis
 
 def chunk_planner_node(state: VideoSummaryState) -> dict:
     """
-    迭代 A：生成稳定的时间窗口切分计划，为后续 Map 分发做准备。
+    工作流入口阶段的规划节点。
+
+    地位:
+    - 位于工作流最前端，是后续所有分片并行节点的上游依赖。
+    - 负责把整段视频证据重写为统一的时间片计划，建立后续 fan-out/fan-in 的公共坐标系。
+
+    任务:
+    - 解析 transcript 中的 segments/chunks 结构。
+    - 结合关键帧时间戳估算视频总时长。
+    - 按 MAP_CHUNK_SECONDS 生成稳定的 chunk_plan。
+    - 为每个 chunk 关联命中的 transcript 片段索引和关键帧索引。
+
+    主要输入:
+    - state["transcript"]: Whisper verbose_json 或兼容的 transcript JSON 字符串。
+    - state["keyframes"]: 已提取的关键帧列表。
+
+    主要输出:
+    - video_duration_seconds: 推断的视频总时长。
+    - chunk_plan: 后续音频、视觉、融合节点共同消费的分片计划。
     """
     transcript = state.get("transcript", "")
     keyframes = state.get("keyframes", [])

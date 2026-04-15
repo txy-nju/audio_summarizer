@@ -39,7 +39,7 @@ class VideoSource(ABC):
             
         :param status_callback: 用于向前端抛出进度状态的可选回调函数
         Returns:
-            Tuple[str, List[Dict]]: (转录文本, 包含时间戳与 base64 图像的关键帧字典列表)
+            Tuple[str, List[Dict]]: (转录文本, 关键帧列表)
         """
         
         def _notify(msg: str):
@@ -60,7 +60,7 @@ class VideoSource(ABC):
         else:
             _notify("⚠️ 视频无音轨，跳过音频提取。")
 
-        _notify("🎞️ 正在执行基于直方图对比的智能防抖抽帧...")
+        _notify("🎞️ 正在提取关键帧（场景检测 + 自适应探测频率）...")
         frames = self.extractor.extract_frames(video_path, interval=DEFAULT_FRAME_INTERVAL)
         _notify(f"✅ 成功抽取 {len(frames)} 张关键帧画面。")
 

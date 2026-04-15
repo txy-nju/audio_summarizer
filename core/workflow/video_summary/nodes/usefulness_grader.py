@@ -8,9 +8,26 @@ MAX_REVISIONS = 2
 
 def usefulness_grader_node(state: VideoSummaryState) -> dict:
     """
-    [Self-RAG 架构升级] 有用性评分器 (Usefulness Grader)。
-    第二道质量防线：在确认草稿无幻觉的前提下，评估其是否完美回答了用户的特定的总结侧重点 (user_prompt)。
-    必须输出严格的 JSON 结构。
+    有用性审查节点。
+
+    地位:
+    - 位于 hallucination_grader_node 之后，是质量闭环的第二道防线。
+    - 在事实基本成立的前提下，检查草稿是否真正回应了用户的总结诉求。
+
+    任务:
+    - 对比 draft_summary 与 user_prompt。
+    - 以 JSON Mode 返回是否满足用户需求。
+    - 若偏题或遗漏重点，则输出定向修改指令并回流到成文节点。
+    - 当 user_prompt 为空或达到重写上限时直接放行。
+
+    主要输入:
+    - state["draft_summary"]
+    - state["user_prompt"]
+    - state["revision_count"]
+
+    主要输出:
+    - usefulness_score: "yes" 或 "no"。
+    - feedback_instructions: 供 fusion_drafter_node 使用的补充修改指令。
     
     :param state: VideoSummaryState
     :return: dict 更新 usefulness_score 和 feedback_instructions

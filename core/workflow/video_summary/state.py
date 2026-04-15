@@ -89,33 +89,33 @@ def _merge_chunk_results(base: List[Dict], update: List[Dict]) -> List[Dict]:
 class VideoSummaryState(TypedDict):
     # 输入层数据
     concurrency_mode: str           # 并发模式：threadpool / send_api
-    transcript: str                 # 视频语音识别文本 (ASR/Whisper 输出)
-    keyframes: List[Dict]           # 关键帧列表，包含 base64 数据及时间戳：[{"time": "00:15", "image": "base64_str"}]
-    keyframes_base_path: str        # 关键帧文件引用模式下的根目录（用于 frame_file 解析）
+    transcript: str                 # 语音转录结果，通常为 Whisper verbose_json 字符串
+    keyframes: List[Dict]           # 关键帧列表，元素至少包含 time，可能包含 image 或 frame_file
+    keyframes_base_path: str        # 关键帧文件引用模式下的根目录
     user_prompt: str                # 用户具体的总结侧重点
     
     # 中间态数据
     aggregated_chunk_insights: str  # 聚合后的分片洞察（供最终 drafter 输入）
 
-    # 5.3 Map-Reduce（迭代 A）中间态
+    # 分片执行中间态
     video_duration_seconds: int     # 推断出的视频总时长（秒）
     chunk_plan: List[Dict]          # 分片计划
     chunk_results: Annotated[List[Dict], _merge_chunk_results]  # 带 reducer 的分片结果，支持并行分支合并
-    current_chunk: Dict             # 当前分片上下文（为 Send API 预留）
-    current_chunk_base_item: Dict   # 当前分片已有结果（Send API worker 合并基座）
-    current_synthesis_chunk: Dict   # 当前融合分片上下文（Send API synthesizer worker）
-    current_synthesis_base_item: Dict  # 当前融合分片已有结果（含音视频洞察）
+    current_chunk: Dict             # Send API worker 当前处理的分片上下文
+    current_chunk_base_item: Dict   # 当前分片已有结果，用于 worker 合并
+    current_synthesis_chunk: Dict   # Send API synthesis worker 当前处理的分片上下文
+    current_synthesis_base_item: Dict  # 当前分片已有的音视频洞察
     chunk_audio_insights: Dict      # 分片音频洞察映射（可选中间态）
     chunk_visual_insights: Dict     # 分片视觉洞察映射（可选中间态）
     chunk_retry_count: Dict         # 分片重试计数
-    reduce_debug_info: Dict         # Reduce 阶段调试元信息
+    reduce_debug_info: Dict         # 分发与汇聚阶段的调试元信息
     
     # 输出与循环控制
     draft_summary: str              # 当前生成的融合总结草稿
     
-    # [Self-RAG 架构升级新增字段]
-    hallucination_score: str        # 幻觉评分器的裁定结果 (取值: "yes" 表示有幻觉, "no" 表示无幻觉)
-    usefulness_score: str           # 有用性评分器的裁定结果 (取值: "yes" 表示有用, "no" 表示无用/偏题)
-    feedback_instructions: str      # 精确的反馈修改指导，替代原先单一模糊的 critique
+    # 质量审查与重写控制
+    hallucination_score: str        # 幻觉审查结果："yes" 表示存在幻觉，"no" 表示通过
+    usefulness_score: str           # 有用性审查结果："yes" 表示满足需求，"no" 表示需要重写
+    feedback_instructions: str      # 审查节点给成文节点的定向修改指令
 
     revision_count: int             # 重写次数

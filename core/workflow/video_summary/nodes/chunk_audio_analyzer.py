@@ -164,6 +164,28 @@ def _process_single_chunk_audio(
 
 
 def chunk_audio_analyzer_node(state: VideoSummaryState) -> dict:
+    """
+    分片音频分析节点。
+
+    地位:
+    - 位于 chunk_plan 之后，是多模态分析链路中的听觉分支。
+    - 与 chunk_vision_analyzer_node 并行执行，共同为后续融合提供分片证据。
+
+    任务:
+    - 从 transcript 中提取每个 chunk 对应的文本片段。
+    - 调用 LLM 生成音频侧摘要。
+    - 按需触发轻量检索并写入 evidence_refs。
+    - 记录 audio 维度的 latency_ms 和 token_usage 占位字段。
+
+    主要输入:
+    - state["chunk_plan"]: 每个 chunk 对应的 transcript_segment_indexes。
+    - state["transcript"]: 完整 transcript。
+    - state["user_prompt"]: 用户的总结偏好。
+    - state["chunk_results"]: 已存在的分片结果基座。
+
+    主要输出:
+    - chunk_results: 为每个 chunk 补充 audio_insights、audio_searches 和相关元数据。
+    """
     chunk_plan = state.get("chunk_plan", [])
     if not isinstance(chunk_plan, list) or not chunk_plan:
         return {"chunk_results": state.get("chunk_results", [])}
@@ -222,7 +244,23 @@ def chunk_audio_analyzer_node(state: VideoSummaryState) -> dict:
 
 def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
     """
-    Send API 试点 worker：每次仅处理一个 current_chunk。
+    Send API 路径下的单分片音频分析 worker。
+
+    地位:
+    - 是 chunk_audio_analyzer_node 的单分片版本，用于图级 fan-out。
+
+    任务:
+    - 仅读取 current_chunk 对应的 transcript 片段。
+    - 生成单个 chunk 的 audio_insights。
+
+    主要输入:
+    - state["current_chunk"]
+    - state["current_chunk_base_item"]
+    - state["transcript"]
+    - state["user_prompt"]
+
+    主要输出:
+    - chunk_results: 长度为 1 的列表，包含当前 chunk 的音频分析结果。
     """
     current_chunk = state.get("current_chunk", {})
     if not isinstance(current_chunk, dict):

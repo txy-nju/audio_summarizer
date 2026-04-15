@@ -142,6 +142,28 @@ def _process_single_chunk_vision(
 
 
 def chunk_vision_analyzer_node(state: VideoSummaryState) -> dict:
+    """
+    分片视觉分析节点。
+
+    地位:
+    - 位于 chunk_plan 之后，是多模态分析链路中的视觉分支。
+    - 与 chunk_audio_analyzer_node 并行执行，为后续融合提供画面证据。
+
+    任务:
+    - 读取每个 chunk 命中的关键帧。
+    - 统一解析 image/frame_file，构造可送入视觉模型的输入。
+    - 调用多模态 LLM 生成 vision_insights。
+    - 按需补充 vision_searches、latency_ms 等元数据。
+
+    主要输入:
+    - state["chunk_plan"]: 每个 chunk 对应的 keyframe_indexes。
+    - state["keyframes"] / state["keyframes_base_path"]
+    - state["user_prompt"]
+    - state["chunk_results"]
+
+    主要输出:
+    - chunk_results: 为每个 chunk 补充 vision_insights 和视觉侧证据元数据。
+    """
     chunk_plan = state.get("chunk_plan", [])
     keyframes = state.get("keyframes", [])
     keyframes_base_path = str(state.get("keyframes_base_path", ""))
@@ -203,7 +225,23 @@ def chunk_vision_analyzer_node(state: VideoSummaryState) -> dict:
 
 def chunk_vision_worker_node(state: VideoSummaryState) -> dict:
     """
-    Send API 试点 worker：每次仅处理一个 current_chunk。
+    Send API 路径下的单分片视觉分析 worker。
+
+    地位:
+    - 是 chunk_vision_analyzer_node 的单分片版本，用于图级 fan-out。
+
+    任务:
+    - 仅读取 current_chunk 命中的关键帧。
+    - 生成单个 chunk 的 vision_insights。
+
+    主要输入:
+    - state["current_chunk"]
+    - state["current_chunk_base_item"]
+    - state["keyframes"] / state["keyframes_base_path"]
+    - state["user_prompt"]
+
+    主要输出:
+    - chunk_results: 长度为 1 的列表，包含当前 chunk 的视觉分析结果。
     """
     current_chunk = state.get("current_chunk", {})
     if not isinstance(current_chunk, dict):
