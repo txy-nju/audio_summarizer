@@ -398,17 +398,22 @@ def answer_question_at_timestamp(
     if not isinstance(keyframes, list):
         keyframes = []
 
-    nearest_frame = find_nearest_keyframe(keyframes, target_seconds)
+    representative_frames = find_nearest_keyframe(keyframes, target_seconds, window_seconds=window_seconds)
     transcript_window = extract_transcript_window(transcript, target_seconds, window_seconds=window_seconds)
 
-    frame_time = nearest_frame.get("time", "未知") if nearest_frame else "未命中"
-    frame_image_b64 = (
-        resolve_frame_image_base64(nearest_frame, keyframes_base_path) if isinstance(nearest_frame, dict) else ""
-    )
+    # 处理多帧返回值：representative_frames 现在是一个列表
+    if not isinstance(representative_frames, list):
+        # 向后兼容：如果返回的是单帧（Dict），转换为列表
+        representative_frames = [representative_frames] if representative_frames else []
+
+    frame_times = [f.get("time", "未知") for f in representative_frames] if representative_frames else []
+    frame_times_str = ", ".join(frame_times) if frame_times else "未命中"
 
     if status_callback:
+        frame_count = len(representative_frames)
         status_callback(
-            f"🎯 [Time Travel] 已定位目标窗口 {timestamp} ±{window_seconds}s，最近关键帧时间戳: {frame_time}"
+            f"🎯 [Time Travel] 已定位目标窗口 {timestamp} ±{window_seconds}s，"
+            f"已选取 {frame_count} 帧代表性关键帧（时间戳: {frame_times_str}）"
         )
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -416,9 +421,9 @@ def answer_question_at_timestamp(
     if not api_key:
         return _build_time_travel_fallback_response(
             timestamp=timestamp,
-            frame_time=frame_time,
+            frame_time=frame_times_str,
             transcript_window=transcript_window,
-            reason="未配置 OPENAI_API_KEY，当前返回的是证据抽取结果。",
+            reason="未配置 OPENAI_API_KEY，当前返回的是证据抽取结果（已选取 {} 帧视觉证据）。".format(len(representative_frames)),
         )
 
     client = OpenAI(api_key=api_key, base_url=base_url)
@@ -434,20 +439,31 @@ def answer_question_at_timestamp(
         f"[会话ID] {resolved_thread_id}\n"
         f"[目标时间戳] {timestamp}\n"
         f"[时间窗] ±{window_seconds}s\n"
-        f"[最近关键帧时间戳] {frame_time}\n"
+        f"[已选取的关键帧时间戳] {frame_times_str}\n"
         f"[用户原始总结侧重点] {user_prompt}\n\n"
         f"[语音证据]\n{transcript_window}\n\n"
         f"[历史总结草稿摘要]\n{draft_summary[:1500]}"
     )
 
     user_content: List[Dict] = [{"type": "text", "text": evidence_text + f"\n\n[追问问题]\n{question}"}]
-    if frame_image_b64:
-        user_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{frame_image_b64}", "detail": "auto"},
-            }
-        )
+    
+    # 为所有代表性帧添加图像证据
+    for idx, frame in enumerate(representative_frames, 1):
+        if isinstance(frame, dict):
+            frame_image_b64 = resolve_frame_image_base64(frame, keyframes_base_path)
+            if frame_image_b64:
+                frame_time = frame.get("time", "未知")
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{frame_image_b64}",
+                            "detail": "auto",
+                        },
+                    }
+                )
+                # 在文本中添加帧的时间戳标注
+                user_content[0]["text"] += f"\n[视觉证据帧 {idx}] 时间戳: {frame_time}"
 
     messages_payload: Any = [
         {"role": "system", "content": system_prompt},
@@ -462,10 +478,10 @@ def answer_question_at_timestamp(
         )
     except Exception as exc:
         if status_callback:
-            status_callback(f"⚠️ [Time Travel] OpenAI 调用异常，已降级返回证据片段: {str(exc)}")
+            status_callback(f"⚠️ [Time Travel] OpenAI 调用异常，已降级返回证据片段（包含 {len(representative_frames)} 帧）: {str(exc)}")
         return _build_time_travel_fallback_response(
             timestamp=timestamp,
-            frame_time=frame_time,
+            frame_time=frame_times_str,
             transcript_window=transcript_window,
             reason=f"OpenAI API 调用异常: {str(exc)}",
         )

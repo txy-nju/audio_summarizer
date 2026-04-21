@@ -285,17 +285,17 @@ from services.workflow_service import VideoSummaryService
 service = VideoSummaryService(api_key="your-key", base_url="https://api.openai.com/v1")
 
 with open("sample.mp4", "rb") as video_file:
-  review_package = service.analyze_uploaded_video(
+    review_package = service.analyze_uploaded_video(
         uploaded_file=video_file,
         original_filename="sample.mp4",
         user_prompt="请重点分析视频中的操作流程",
-    concurrency_mode="threadpool",  # 或 send_api
+        concurrency_mode="threadpool",  # 或 send_api
     )
 
 summary = service.finalize_summary(
-  thread_id=review_package["thread_id"],
-  edited_aggregated_chunk_insights=review_package.get("editable_aggregated_chunk_insights", ""),
-  human_guidance="重点补充架构设计权衡与风险点",
+    thread_id=review_package["thread_id"],
+    edited_aggregated_chunk_insights=review_package.get("editable_aggregated_chunk_insights", ""),
+    human_guidance="重点补充架构设计权衡与风险点",
 )
 
 print(service.last_thread_id)

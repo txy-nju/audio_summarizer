@@ -30,6 +30,38 @@ class TestTimeTravelUtils(unittest.TestCase):
         self.assertIsNotNone(nearest)
         self.assertEqual(nearest["time"], "00:20")
 
+    def test_find_nearest_keyframe_multi_frame_mode(self):
+        """测试多帧模式：返回时间窗口内的多个代表性关键帧"""
+        keyframes = [
+            {"time": "00:00", "image": "a"},
+            {"time": "00:10", "image": "b"},
+            {"time": "00:20", "image": "c"},
+            {"time": "00:30", "image": "d"},
+            {"time": "00:40", "image": "e"},
+            {"time": "00:50", "image": "f"},
+        ]
+        # 时间窗口：[30-20, 30+20] = [10, 50]，应该返回 3-5 帧
+        result = find_nearest_keyframe(keyframes, 30, window_seconds=20)
+        self.assertIsInstance(result, list)
+        self.assertGreaterEqual(len(result), 3)
+        self.assertLessEqual(len(result), 5)
+        # 验证返回的帧都在窗口范围内
+        for frame in result:
+            frame_time = int(frame["time"].split(":")[1])
+            self.assertGreaterEqual(frame_time, 10)
+            self.assertLessEqual(frame_time, 50)
+
+    def test_find_nearest_keyframe_multi_frame_empty_window(self):
+        """测试多帧模式：窗口内无帧时返回空列表"""
+        keyframes = [
+            {"time": "00:05", "image": "a"},
+            {"time": "00:10", "image": "b"},
+        ]
+        # 目标时间在很远的地方，窗口内无帧
+        result = find_nearest_keyframe(keyframes, 100, window_seconds=10)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 0)
+
     def test_extract_transcript_window_verbose_json(self):
         transcript = """
         {
