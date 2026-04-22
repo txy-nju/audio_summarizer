@@ -1,0 +1,33 @@
+[
+  {
+    "sample_id": "field-meaning-url-example-006",
+    "enabled": false,
+    "source_type": "url",
+    "video_source": "https://www.youtube.com/watch?v=REPLACE_WITH_REAL_VIDEO_ID",
+    "user_prompt": "字段说明示例：这里写用户真正想让模型回答的任务焦点，例如“重点解释方案优劣和落地步骤”。",
+    "reference_summary": "字段说明示例：这里写人工参考摘要，作为声明级事实核查的主要证据来源。",
+    "key_points": [
+      "字段说明示例：这里写可核对的要点 1（建议是可验证事实）",
+      "字段说明示例：这里写可核对的要点 2（建议覆盖数字、实体、结论）",
+      "字段说明示例：这里写可核对的要点 3（建议覆盖易幻觉点）"
+    ],
+    "tags": ["schema-example", "url", "tutorial"],
+    "human_guidance": "字段说明示例：可选的人审补充要求，会参与任务对齐评分。",
+    "edited_aggregated_chunk_insights": "字段说明示例：可选。若填写，finalize 阶段优先使用该人工编辑底稿。"
+  },
+  {
+    "sample_id": "field-meaning-local-example-007",
+    "enabled": false,
+    "source_type": "local",
+    "video_source": "test_output/e2e_pipeline/sample.mp4",
+    "user_prompt": "字段说明示例：本地视频场景下，写你希望总结强调的结构，如“先问题定义，再方案细节，最后风险”。",
+    "reference_summary": "字段说明示例：本地视频对应的人工参考摘要。建议 3 到 8 句，覆盖主线信息。",
+    "key_points": [
+      "字段说明示例：把关键实体写清楚（人名、系统名、指标名）",
+      "字段说明示例：把关键关系写清楚（谁做了什么、先后顺序）",
+      "字段说明示例：把关键结论写清楚（结果、收益、限制）"
+    ],
+    "tags": ["schema-example", "local", "demo"],
+    "human_guidance": "字段说明示例：可选。用于强调风格或补充输出要求，例如“增加风险清单”。"
+  }
+]

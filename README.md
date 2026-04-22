@@ -318,6 +318,62 @@ answer = service.ask_at_timestamp(
 print(answer)
 ```
 
+## 离线评估系统（轻量版）
+
+本仓库已提供最小可用评估闭环，包含：
+
+- 核心数据集：`evaluation/datasets/core_set.json`
+- 批量评估入口：`scripts/run_eval.py`
+- baseline 对比工具：`scripts/compare_eval_reports.py`
+
+### 1. 准备数据集
+
+在 `evaluation/datasets/core_set.json` 中维护样本。每条样本至少包含：
+
+1. `sample_id`
+2. `source_type`（`url` 或 `local`）
+3. `video_source`
+4. `user_prompt`
+5. `reference_summary` 或 `key_points`
+
+可通过 `enabled` 字段控制是否参与本次批量评估。
+
+### 2. 运行离线批量评估
+
+```bash
+python scripts/run_eval.py --dataset evaluation/datasets/core_set.json --output-dir evaluation/reports
+```
+
+常用参数：
+
+- `--max-samples 5`：只跑前 5 个启用样本
+- `--sample-ids id1,id2`：只跑指定样本
+- `--baseline-report evaluation/reports/<baseline_run>/report.json`：生成基础分数对比
+
+运行后将生成：
+
+- `evaluation/reports/<run_id>/report.json`
+- `evaluation/reports/<run_id>/report.md`
+- `evaluation/reports/<run_id>/samples/<sample_id>/final_summary.md`
+
+### 3. 对比两次评估结果
+
+```bash
+python scripts/compare_eval_reports.py \
+    --current evaluation/reports/<current_run>/report.json \
+    --baseline evaluation/reports/<baseline_run>/report.json
+```
+
+默认会在当前报告目录输出：
+
+- `compare_<timestamp>.md`
+- `compare_<timestamp>.json`
+
+当前评估默认只关注两个核心指标：
+
+1. Fact（一致性/幻觉风险）
+2. Task（任务对齐度）
+
 ## 测试
 
 ### 快速运行核心测试
