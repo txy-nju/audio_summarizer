@@ -40,7 +40,7 @@ Video Summarizer 的核心理念是**让 AI 像人类专家一样看完整个视
 
 这不是一个单次输出摘要的脚本，而是一套包含**提取层、工作流层、会话持久化层、前端交互层和测试闭环**的完整工程化实现，具备以下工程特质：
 
-- **可扩展**：提取策略（URL / Upload）和并发模式（ThreadPool / Send API）均可独立扩展
+- **可扩展**：提取策略（URL / Upload）可独立扩展，分片并发采用 send_api 图级 fan-out/fan-in
 - **可回溯**：基于 Checkpoint 的状态持久化机制支持断点恢复与历史追问
 - **可审计**：两阶段工作流 + 人类审批关口 + 结构化指标日志
 - **可测试**：~130 个测试覆盖节点、路由、并发合并、集成链路和 E2E 烟测
@@ -87,9 +87,9 @@ Video Summarizer 的核心理念是**让 AI 像人类专家一样看完整个视
 
 通过 thread_id + Checkpoint 机制保存每次分析的完整状态。用户在总结完成后可指定任意时间戳继续提问，系统自动回溯该时间窗附近的语音片段和最近邻关键帧，以证据约束方式生成回答。
 
-### 2.8 双并发模式
+### 2.8 Send API 并发架构
 
-支持 `threadpool`（稳定默认）和 `send_api`（LangGraph 原生 fan-out/fan-in）两种并发模式，通过配置开关切换，保留回滚路径。Send API 模式实现更细粒度的分片级进度追踪与错误隔离。
+系统并发路径已收敛为 `send_api`：通过 LangGraph 原生 fan-out/fan-in 对分片任务进行并行调度，并在 reducer 阶段统一做深度合并。该模式提供分片级进度追踪与更清晰的任务隔离语义。
 
 ### 2.9 实时状态透传
 
@@ -127,17 +127,12 @@ LangGraph 提供的 StateGraph 能力契合本项目的核心需求：
 - **Checkpoint 持久化**：内存/Postgres 双后端，支持断点恢复和时间旅行
 - **Send API**：图级 fan-out 支持动态数量的并行任务分发
 
-#### 双并发模式实现
+#### Send API 并发实现
 
 ```
-threadpool 模式：
-  map_dispatch_node → ThreadPoolExecutor.map(chunks)
-  → {chunk_audio_node, chunk_vision_node}  # LangGraph 图级并行
-  → chunk_synthesizer_node
-
 send_api 模式：
-  map_dispatch_node → route_audio_send_tasks() → Send(audio_worker × N)
-                    → route_vision_send_tasks() → Send(vision_worker × N)
+   map_dispatch_node → route_audio_send_tasks() → Send(audio_worker × N)
+                              → route_vision_send_tasks() → Send(vision_worker × N)
   → synthesis_barrier_node  # 等待所有音视频完成
   → route_synthesis_send_tasks() → Send(synthesizer_worker × N)
   → chunk_synthesizer_node
@@ -208,8 +203,7 @@ class VideoSummaryState(TypedDict):
     transcript: str                    # Whisper verbose_json
     keyframes: List[Dict]              # [{time, image|frame_file}]
     keyframes_base_path: str           # 关键帧文件引用基础路径
-    user_prompt: str                   # 用户侧重需求
-    concurrency_mode: str              # "threadpool" | "send_api"
+   user_prompt: str                   # 用户侧重需求
 
     # ── 分片规划 ──
     video_duration_seconds: int
@@ -220,7 +214,6 @@ class VideoSummaryState(TypedDict):
 
     # ── Send API Worker 上下文 ──
     current_chunk: Optional[Dict]
-    current_chunk_base_item: Optional[Dict]
     current_synthesis_chunk: Optional[Dict]
     current_synthesis_base_item: Optional[Dict]
 
@@ -285,7 +278,7 @@ Streamlit 前端提供以下核心交互能力：
 
 | 功能区 | 说明 |
 |--------|------|
-| **Settings 侧边栏** | API Key / Base URL / 视频来源选择 / 用户侧重需求 / 并发模式 / 会话绑定 |
+| **Settings 侧边栏** | API Key / Base URL / 视频来源选择 / 用户侧重需求 / 会话绑定 |
 | **视频预览区** | YouTube URL 内嵌播放 / 上传视频本地播放 |
 | **实时状态面板** | `st.status` 容器 + 分片级进度条（音频/视觉/融合/总体四通道） |
 | **人工审批区** | 可编辑聚合稿 + Human Guidance 输入 + 审批按钮触发第二阶段 |
@@ -304,10 +297,9 @@ Streamlit 前端提供以下核心交互能力：
 | `OPENAI_VISION_MODEL_NAME` | 回退为 `OPENAI_MODEL_NAME` | 视觉分析专用模型 |
 | `TRANSCRIBER_MODEL` | `whisper-1` | 语音转文本模型 |
 | `TAVILY_API_KEY` | 可选 | 搜索工具 API Key |
-| `CONCURRENCY_MODE` | `threadpool` | 并发模式：`threadpool` / `send_api` |
 | `MAP_CHUNK_SECONDS` | `120` | 分片时长（秒） |
 | `MAP_CHUNK_OVERLAP_SECONDS` | `10` | 分片重叠时长 |
-| `MAP_MAX_PARALLELISM` | `4` | ThreadPool 最大并行数 |
+| `MAP_MAX_PARALLELISM` | `4` | 分片并行度配置（预留） |
 | `CHUNK_MAX_TOOL_CALLS` | `2` | 每个分片最大搜索调用次数 |
 | `AGGREGATED_CHUNK_INSIGHTS_MAX_CHARS` | `24000` | 聚合稿截断上限 |
 | `CHECKPOINT_BACKEND` | `memory` | Checkpoint 后端：`memory` / `postgres` |
@@ -326,7 +318,7 @@ Streamlit 前端提供以下核心交互能力：
 
 - **Mock 外部依赖，验证内部逻辑**：所有 LLM API 调用、Whisper 转录、Tavily 搜索均通过 Mock 隔离，确保测试不依赖真实 API 调用
 - **状态转移为核心断言目标**：每个节点测试重点验证 VideoSummaryState 的字段变更是否符合预期
-- **机制验证优于时间断言**：并发测试通过 Mock ThreadPoolExecutor 调用计数验证并行性，而非脆弱的执行时间断言
+- **机制验证优于时间断言**：并发测试通过 Send 路由与 reducer 断言验证并行语义，而非脆弱的执行时间断言
 - **分层覆盖，逐级递进**：工具函数 → 单个节点 → 节点组合 → 完整图执行 → 端到端烟测
 
 ### 4.2 分层策略
@@ -338,19 +330,19 @@ Streamlit 前端提供以下核心交互能力：
 | 测试文件 | 测试数 | 测试目标 | 关键场景 |
 |----------|--------|----------|----------|
 | `test_chunk_planner.py` | 8 | 分片规划节点 | 正常规划 / 空输入 / 畸形 JSON / 时长回退推断 |
-| `test_chunk_audio_analyzer.py` | 6 | 音频分析节点 | LLM 摘要 + Tavily 搜索 / 并发控制 |
-| `test_chunk_vision_analyzer.py` | 9 | 视觉分析节点 | inline 图片 / 文件引用 / 缺失帧容错 |
+| `test_chunk_audio_analyzer.py` | - | 已移除旧 analyzer 测试 | 音频路径改为 worker + reducer 汇聚 |
+| `test_chunk_vision_analyzer.py` | - | 已移除旧 analyzer 测试 | 视觉路径改为 worker + reducer 汇聚 |
 | `test_chunk_synthesizer.py` | 6 | 分片融合节点 | 音视融合 / 并行性能 |
 | `test_chunk_aggregator.py` | 3 | 聚合节点 | 顺序拼接 / 空 chunks / 超长截断 |
 | `test_fusion_drafter.py` | 3 | 成文节点 | Markdown 生成 / feedback 回流 |
 | `test_hallucination_grader.py` | 7 | 幻觉核查节点 | JSON Mode 解析 / 熔断逻辑 / 修正指令生成 |
 | `test_usefulness_grader.py` | 7 | 有用性核查节点 | prompt 对齐 / 无 prompt 放行 / human_guidance 融入 |
 | `test_graph_routing.py` | 4 | 条件路由函数 | 幻觉/有用性决策树 |
-| `test_map_dispatcher.py` | 12 | 分发节点 | threadpool vs send_api 分支 / Send payload 构造 / 合成屏障 |
+| `test_map_dispatcher.py` | 12 | 分发节点 | Send payload 构造 / 合成屏障 / 路由门控 |
 | `test_human_gate_routing.py` | 3 | HITL 路由 | pending / approved 状态转移 |
 | `test_frame_utils.py` | 2 | 帧工具函数 | inline_image / frame_file 优先级 |
 | `test_time_travel.py` | 5 | 时间旅行工具 | 时间戳解析 / 最近邻匹配 / 窗口抽取 |
-| `test_concurrency_mode_config.py` | 3 | 并发配置 | 合法值 / 非法值回退 |
+| `test_concurrency_mode_config.py` | 1 | 并发配置 | 固定 send_api 配置校验 |
 | `tools/test_search_tools.py` | - | Tavily 搜索工具 | urllib 实现 / 无 Key 降级 |
 
 #### 第二层：单元测试（~24 个 · `tests/core/extraction/`）
@@ -386,7 +378,7 @@ Streamlit 前端提供以下核心交互能力：
 | 脚本 | 用途 |
 |------|------|
 | `ab_full_regression_3rounds.py` | A/B 模式三轮回归对比，统计 pytest 通过率 |
-| `ab_mode_baseline_sample.py` | 单轮 threadpool / send_api 性能采样基线 |
+| `ab_mode_baseline_sample.py` | 单轮 send_api 性能采样基线 |
 | `check_openai_api.py` | API 连接可用性检测 |
 
 ### 4.3 质量评估
@@ -406,7 +398,7 @@ Streamlit 前端提供以下核心交互能力：
 |------|----------|------|
 | Mock LLM API | 所有节点测试 | 避免真实 API 调用的成本和不确定性 |
 | 状态字段断言 | 所有节点测试 | 精确验证 VideoSummaryState 字段变更 |
-| 并发机制验证 | 并行测试 | ThreadPoolExecutor Mock 调用计数，非时间断言 |
+| 并发机制验证 | 并行测试 | Send 路由分发 + reducer 合并断言，非时间断言 |
 | Checkpoint 往返 | 持久化测试 | 写入 → 读取 → 验证状态一致性 |
 | 降级路径覆盖 | 搜索/转录/API 测试 | 无 Key / 网络异常时的优雅降级 |
 | 参数化多场景 | 规划/分析/路由测试 | 正常 / 边界 / 异常输入的参数化覆盖 |
@@ -504,13 +496,13 @@ video_summarizer/
 │       ├── checkpoint_factory.py   # Checkpoint 工厂（memory / postgres）
 │       ├── time_travel.py          # 时间旅行工具函数
 │       └── video_summary/
-│           ├── graph.py            # LangGraph 图构建（双图 + 双并发模式）
+│           ├── graph.py            # LangGraph 图构建（双图 + send_api 并发）
 │           ├── state.py            # VideoSummaryState 定义 + Reducer
 │           ├── nodes/
 │           │   ├── chunk_planner.py          # 分片规划
 │           │   ├── map_dispatcher.py         # 分发与屏障
-│           │   ├── chunk_audio_analyzer.py   # 音频分析（ThreadPool + Send API 双路径）
-│           │   ├── chunk_vision_analyzer.py  # 视觉分析（ThreadPool + Send API 双路径）
+│           │   ├── chunk_audio_analyzer.py   # 音频分析 worker
+│           │   ├── chunk_vision_analyzer.py  # 视觉分析 worker
 │           │   ├── chunk_synthesizer.py      # 分片融合
 │           │   ├── chunk_aggregator.py       # 证据聚合
 │           │   ├── human_gate.py             # 人类审批关口
@@ -554,7 +546,7 @@ video_summarizer/
 
 Streamlit 页面，职责边界严格限定为 **UI 交互与状态展示**：
 
-- 收集用户输入（API Key / Base URL / 视频来源 / 用户侧重需求 / 并发模式 / thread_id）
+- 收集用户输入（API Key / Base URL / 视频来源 / 用户侧重需求 / thread_id）
 - 通过 `status_callback` 闭包将工作流进度实时透传至 `st.status` 容器
 - 管理 `st.session_state` 持久化会话状态（summary / thread_id / pending_review）
 - 人工审批面板：展示可编辑聚合稿 + Human Guidance 输入
@@ -597,9 +589,9 @@ Streamlit 页面，职责边界严格限定为 **UI 交互与状态展示**：
 | 节点 | 阶段 | 职责 |
 |------|------|------|
 | `chunk_planner_node` | Phase 1 | 根据 transcript + keyframes 时间戳生成分片计划（两指针扫描 + 堆优化） |
-| `map_dispatch_node` | Phase 1 | 按并发模式分发任务，初始化重试计数和调试字段 |
-| `chunk_audio_analyzer_node` | Phase 1 | 按分片提取文本证据 → LLM 摘要 → 可选 Tavily 搜索增强 |
-| `chunk_vision_analyzer_node` | Phase 1 | 按分片提取关键帧 → 视觉模型分析 → 可选 Tavily 搜索增强 |
+| `map_dispatch_node` | Phase 1 | 分发 send_api 任务，初始化重试计数和调试字段 |
+| `chunk_audio_worker_node` | Phase 1 | 处理单分片文本证据 → LLM 摘要 → 可选 Tavily 搜索增强 |
+| `chunk_vision_worker_node` | Phase 1 | 处理单分片关键帧 → 视觉模型分析 → 可选 Tavily 搜索增强 |
 | `chunk_synthesizer_node` | Phase 1 | 融合每个分片的音频洞察与视觉洞察为 chunk_summary |
 | `chunk_aggregator_node` | Phase 1 | 按 chunk_plan 顺序拼接所有分片证据，生成聚合底稿（含截断保护） |
 | `human_gate_node` | Phase 1→2 | 人类审批关口，Phase 1 止于 pending，Phase 2 由审批触发 |
@@ -613,7 +605,7 @@ Streamlit 页面，职责边界严格限定为 **UI 交互与状态展示**：
 
 ```
 1. 用户输入
-   │  api_key, base_url, video_source, user_prompt, thread_id, concurrency_mode
+   │  api_key, base_url, video_source, user_prompt, thread_id
    ▼
 2. VideoSummaryService 选择 Source 实现
    │  UrlVideoSource | LocalFileVideoSource
@@ -630,8 +622,8 @@ Streamlit 页面，职责边界严格限定为 **UI 交互与状态展示**：
    │
    ├─ map_dispatch_node（分发策略标记 + 重试初始化）
    │
-   ├─ [并行] chunk_audio_analyzer_node ──→ chunk_results[].audio_insights
-   ├─ [并行] chunk_vision_analyzer_node ──→ chunk_results[].vision_insights
+   ├─ [并行] chunk_audio_worker_node ──→ chunk_results[].audio_insights
+   ├─ [并行] chunk_vision_worker_node ──→ chunk_results[].vision_insights
    │    └── _merge_chunk_results (Reducer) 自动合并并行分支
    │
    ├─ chunk_synthesizer_node ──→ chunk_results[].chunk_summary

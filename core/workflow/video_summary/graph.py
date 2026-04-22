@@ -30,23 +30,6 @@ from core.workflow.video_summary.edges.router import (
     ROUTE_USEFUL,
 )
 
-def _add_chunk_pipeline_for_send_api(workflow: StateGraph) -> None:
-    """
-    Send API 模式：音频和视觉分支采用图级 fan-out，融合阶段在 barrier 后二次分发。
-    """
-    workflow.add_edge(START, "chunk_planner_node")
-    workflow.add_edge("chunk_planner_node", "map_dispatch_node")
-
-    workflow.add_conditional_edges("map_dispatch_node", route_audio_send_tasks)
-    workflow.add_conditional_edges("map_dispatch_node", route_vision_send_tasks)
-
-    # 先汇聚到 barrier，再触发 synthesis fan-out。
-    workflow.add_edge("chunk_audio_worker_node", "synthesis_barrier_node")
-    workflow.add_edge("chunk_vision_worker_node", "synthesis_barrier_node")
-    workflow.add_conditional_edges("synthesis_barrier_node", route_synthesis_send_tasks)
-
-    workflow.add_edge("chunk_synthesizer_worker_node", "chunk_synthesizer_node")
-
 
 def build_video_summary_graph(checkpointer: Any = None) -> Any:
     """
@@ -68,7 +51,18 @@ def build_video_summary_graph(checkpointer: Any = None) -> Any:
     workflow.add_node("human_gate_node", human_gate_node) # type: ignore
 
     # 3. 编排拓扑连线
-    _add_chunk_pipeline_for_send_api(workflow)
+    workflow.add_edge(START, "chunk_planner_node")
+    workflow.add_edge("chunk_planner_node", "map_dispatch_node")
+
+    workflow.add_conditional_edges("map_dispatch_node", route_audio_send_tasks)
+    workflow.add_conditional_edges("map_dispatch_node", route_vision_send_tasks)
+
+    # 先汇聚到 barrier，再触发 synthesis fan-out。
+    workflow.add_edge("chunk_audio_worker_node", "synthesis_barrier_node")
+    workflow.add_edge("chunk_vision_worker_node", "synthesis_barrier_node")
+    workflow.add_conditional_edges("synthesis_barrier_node", route_synthesis_send_tasks)
+
+    workflow.add_edge("chunk_synthesizer_worker_node", "chunk_synthesizer_node")
 
     # 分片结果先聚合，再交由成文节点生成草稿
     workflow.add_edge("chunk_synthesizer_node", "chunk_aggregator_node")

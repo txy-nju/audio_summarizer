@@ -8,7 +8,7 @@
 
 - 多模态总结：同时利用 Whisper 转录文本与视频关键帧进行联合理解。
 - 两阶段工作流：第一阶段完成分片分析与聚合并进入人类审批，第二阶段才进行最终成文与质量审查。
-- LangGraph 工作流：基于分片规划与 Map-Reduce 编排，支持 `threadpool` 与 `send_api` 并发模式。
+- LangGraph 工作流：基于分片规划与 Map-Reduce 编排，采用 send_api 图级 fan-out/fan-in 并发架构。
 - Self-RAG 双重防线：先做事实核查，再做用户需求对齐，避免“有文笔但不靠谱”的输出。
 - 主动求知工具：当文本或画面出现生僻热词、梗图、未知 UI 或角色时，分析节点可调用 Tavily 搜索补充背景知识。
 - 人类在环（HITL）：支持对聚合稿进行人工编辑和补充指导意见，再触发最终总结生成。
@@ -34,7 +34,7 @@
 ### 3. 工作流层
 
 - chunk_planner_node：按时间轴生成分片计划（chunk_plan）
-- map_dispatch_node：按并发模式分发音频/视觉分片任务
+- map_dispatch_node：分发音频/视觉分片任务（send_api）
 - chunk_audio_* / chunk_vision_*：并行分析每个分片的语音与视觉证据
 - chunk_synthesizer_node：融合每个分片的音视频洞察
 - chunk_aggregator_node：汇总所有分片输出，生成聚合证据底稿
@@ -289,7 +289,6 @@ with open("sample.mp4", "rb") as video_file:
         uploaded_file=video_file,
         original_filename="sample.mp4",
         user_prompt="请重点分析视频中的操作流程",
-        concurrency_mode="threadpool",  # 或 send_api
     )
 
 summary = service.finalize_summary(
