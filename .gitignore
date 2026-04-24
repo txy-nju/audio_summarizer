@@ -18,3 +18,7 @@ temp_audio.mp3
 .idea/
 .vscode/
 *.DS_Store
+
+# 评估样本
+evaluation/eval_videos/
+evaluation/reports/*

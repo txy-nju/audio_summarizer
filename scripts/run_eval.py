@@ -110,8 +110,11 @@ def _run_fact_judge(
     reference_evidence: str,
     api_key: str,
     base_url: Optional[str],
+    sample_id: str,
 ) -> JudgeResult:
+    print(f"  [Judge:Fact] sample={sample_id} 开始声明级幻觉评分（Claim Extraction -> Claim Verification）")
     if not reference_evidence:
+        print(f"  [Judge:Fact] sample={sample_id} 跳过：reference_evidence 为空")
         return JudgeResult(label="na", score=None, details="reference evidence missing", metrics={})
 
     try:
@@ -121,6 +124,16 @@ def _run_fact_judge(
             api_key=api_key,
             base_url=base_url,
         )
+        print(
+            "  [Judge:Fact] sample={} 完成：label={} score={} claims={} support_ratio={} hallucination_density={}".format(
+                sample_id,
+                result.get("label", "na"),
+                result.get("score"),
+                result.get("claim_count", 0),
+                result.get("support_ratio"),
+                result.get("hallucination_density"),
+            )
+        )
         return JudgeResult(
             label=str(result.get("label", "na")),
             score=result.get("score"),
@@ -128,6 +141,7 @@ def _run_fact_judge(
             metrics=result,
         )
     except Exception as exc:
+        print(f"  [Judge:Fact] sample={sample_id} 异常：{exc}")
         return JudgeResult(label="na", score=None, details=str(exc), metrics={})
 
 
@@ -137,8 +151,11 @@ def _run_task_judge(
     human_guidance: str,
     api_key: str,
     base_url: Optional[str],
+    sample_id: str,
 ) -> JudgeResult:
+    print(f"  [Judge:Task] sample={sample_id} 开始任务对齐评分（Requirement Extraction -> Requirement Verification）")
     if not user_prompt and not human_guidance:
+        print(f"  [Judge:Task] sample={sample_id} 跳过：user_prompt 与 human_guidance 均为空")
         return JudgeResult(
             label="na",
             score=None,
@@ -154,6 +171,15 @@ def _run_task_judge(
             api_key=api_key,
             base_url=base_url,
         )
+        print(
+            "  [Judge:Task] sample={} 完成：label={} score={} requirements={} coverage_ratio={}".format(
+                sample_id,
+                result.get("label", "na"),
+                result.get("score"),
+                result.get("requirement_count", 0),
+                result.get("coverage_ratio"),
+            )
+        )
         return JudgeResult(
             label=str(result.get("label", "na")),
             score=result.get("score"),
@@ -161,6 +187,7 @@ def _run_task_judge(
             metrics=result,
         )
     except Exception as exc:
+        print(f"  [Judge:Task] sample={sample_id} 异常：{exc}")
         return JudgeResult(label="na", score=None, details=str(exc), metrics={})
 
 
@@ -198,6 +225,20 @@ def _metric_int_sum(results: List[Dict[str, Any]], field: str) -> int:
             continue
         total += int(value)
     return total
+
+
+def _check_duplicate_sample_ids(samples: List[EvalSample]) -> None:
+    """Check for duplicate enabled sample IDs and raise error if found."""
+    seen_ids: Dict[str, int] = {}
+    for idx, sample in enumerate(samples):
+        if sample.sample_id in seen_ids:
+            first_idx = seen_ids[sample.sample_id]
+            raise ValueError(
+                f"Duplicate enabled sample_id detected: '{sample.sample_id}' "
+                f"at positions {first_idx} and {idx}. "
+                f"Each enabled sample must have a unique sample_id within a run."
+            )
+        seen_ids[sample.sample_id] = idx
 
 
 def _render_markdown(report: Dict[str, Any]) -> str:
@@ -313,6 +354,9 @@ def run_eval(
         chosen = set(sample_ids)
         enabled_samples = [s for s in enabled_samples if s.sample_id in chosen]
 
+    # Check for duplicate sample IDs
+    _check_duplicate_sample_ids(enabled_samples)
+
     if max_samples is not None and max_samples >= 0:
         enabled_samples = enabled_samples[:max_samples]
 
@@ -369,6 +413,7 @@ def run_eval(
             finalize_ms = int((time.perf_counter() - finalize_started) * 1000)
 
             reference_evidence = _build_reference_evidence(sample)
+            print(f"  [Judge] sample={sample.sample_id} 并发启动 Fact/Task 评分")
             with ThreadPoolExecutor(max_workers=2) as executor:
                 fact_future = executor.submit(
                     _run_fact_judge,
@@ -376,6 +421,7 @@ def run_eval(
                     reference_evidence,
                     api_key,
                     base_url,
+                    sample.sample_id,
                 )
                 task_future = executor.submit(
                     _run_task_judge,
@@ -384,9 +430,11 @@ def run_eval(
                     sample.human_guidance,
                     api_key,
                     base_url,
+                    sample.sample_id,
                 )
                 fact_judge = fact_future.result()
                 task_judge = task_future.result()
+            print(f"  [Judge] sample={sample.sample_id} Fact/Task 评分已汇总")
 
             final_summary_path = sample_dir / "final_summary.md"
             sample_result_path = sample_dir / "result.json"

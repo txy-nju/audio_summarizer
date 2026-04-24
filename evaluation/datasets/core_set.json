@@ -29,5 +29,26 @@
     ],
     "tags": ["schema-example", "local", "demo"],
     "human_guidance": "字段说明示例：可选。用于强调风格或补充输出要求，例如“增加风险清单”。"
+  },
+  {
+  "sample_id": "eval-agent-context-2026-001",
+  "enabled": true,
+  "source_type": "local",
+  "video_source": "evaluation/eval_videos/面试官问：如何设计Agent上下文维护方案？.mp4",
+  "user_prompt": "请总结视频中关于Agent上下文维护方案的核心内容。结构要求：1. 先阐述长上下文面临的本质问题；2. 介绍业界的四象限框架及优先级；3. 详述开源记忆生态与上下文污染的四层防御机制；4. 总结2026年前沿技术信号与最终结论。",
+  "reference_summary": "该视频详细解析了AI面试题“如何设计Agent上下文维护方案”。首先指出，由于Transformer架构$n^2$复杂度的数学限制，长上下文必然导致注意力被稀释，单纯依赖大窗口并不可靠。接着介绍了业界主流的四象限框架（Write、Select、Compress、Isolate），并强调Select（选择）是性价比最高的一层。此外，视频探讨了开源记忆生态（如Filesystem派的Letta、Graph派的Graphiti），并提出了应对上下文污染的四层防御策略：数据结构层、契约层、版本化层和心理模型层。最后总结，随着Opus 4.7引入Task Budgets等特性，上下文维护不再是容量问题，而是“认知管理”的本质约束。",
+  "key_points": [
+    "实体与原因：需指出长上下文变差的根本原因是Transformer的$n^2$数学约束导致Attention被稀释。",
+    "框架与排序：需准确列出业界四象限框架（Write、Select、Compress、Isolate），并说明Select性价比最高。",
+    "机制说明：需完整列出应对上下文污染的4层防御体系（数据结构层、契约层、版本化层、心理模型层）。",
+    "前沿技术实体：需提及具体的2026年技术信号，如Letta（Filesystem派/版本化）、Graphiti（4个时间戳）、Opus 4.7（Task Budgets）。"
+  ],
+  "tags": [
+    "agent-architecture",
+    "context-management",
+    "interview-analysis",
+    "llm-memory"
+  ],
+  "human_guidance": "评估时请重点关注摘要是否遗漏了核心的专有名词（如四象限的具体英文名称、四层防御的具体层级），以及是否准确传达了“上下文维护是认知问题而非容量问题”的最终结论。"
   }
 ]
