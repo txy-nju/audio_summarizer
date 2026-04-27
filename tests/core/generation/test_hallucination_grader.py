@@ -22,6 +22,16 @@ class TestHallucinationGraderNode(unittest.TestCase):
             "user_prompt": "",
             "draft_summary": "草稿：这里说有一只飞天猪。",
             "aggregated_chunk_insights": "听觉：没有提到飞天猪。\n视觉：画面里只有一棵树。",
+            "structured_global_context": {
+                "entities": [
+                    {"name": "LangGraph", "kind": "observed_term", "frequency": 3},
+                    {"name": "OpenAI",   "kind": "observed_term", "frequency": 2},
+                ],
+                "timeline_anchors": [
+                    {"chunk_id": "chunk-000", "start_sec": 0,   "end_sec": 120},
+                    {"chunk_id": "chunk-001", "start_sec": 120, "end_sec": 240},
+                ],
+            },
             "revision_count": 0,
             "hallucination_score": "",
             "usefulness_score": "",
@@ -131,6 +141,59 @@ class TestHallucinationGraderNode(unittest.TestCase):
         print_args_timeout = [call_args[0][0] for call_args in mock_print.call_args_list]
         timeout_error_logged = any("API Server Timeout" in arg for arg in print_args_timeout)
         self.assertTrue(timeout_error_logged, "系统应当详细记录 API 超时导致降级的日志，以便排查")
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123"})
+    @patch('core.workflow.video_summary.nodes.hallucination_grader.OpenAI')
+    def test_grader_injects_outline_context_into_llm_call(self, mock_openai_class):
+        """新增：structured_global_context 的实体与时间锚点应当被注入 LLM user_content"""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps(
+            {"score": "no", "faulty_timestamp": "", "reason": ""}
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        hallucination_grader_node(self.valid_state)
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs.get("messages", [])
+        user_content = next(
+            (m["content"] for m in messages if m.get("role") == "user"), ""
+        )
+        # 实体名称应出现在 user_content 里
+        self.assertIn("LangGraph", user_content)
+        self.assertIn("OpenAI",   user_content)
+        # 时间锚点应出现
+        self.assertIn("chunk-000", user_content)
+        self.assertIn("chunk-001", user_content)
+        # 二级约束标题应出现
+        self.assertIn("二级约束", user_content)
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123"})
+    @patch('core.workflow.video_summary.nodes.hallucination_grader.OpenAI')
+    def test_grader_gracefully_handles_empty_outline(self, mock_openai_class):
+        """新增：structured_global_context 为空或缺失时不应崩溃，二级约束块不出现"""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps(
+            {"score": "no", "faulty_timestamp": "", "reason": ""}
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        for empty_ctx in ({}, None, {"entities": [], "timeline_anchors": []}):
+            state = {**self.valid_state, "structured_global_context": empty_ctx}
+            result = hallucination_grader_node(state)
+            self.assertEqual(result["hallucination_score"], "no")
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            messages = call_kwargs.get("messages", [])
+            user_content = next(
+                (m["content"] for m in messages if m.get("role") == "user"), ""
+            )
+            self.assertNotIn("二级约束", user_content)
+
 
 if __name__ == '__main__':
     unittest.main()
