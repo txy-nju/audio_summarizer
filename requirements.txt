@@ -9,3 +9,4 @@ tenacity
 python-dotenv
 ffmpeg-python
 langgraph
+jieba

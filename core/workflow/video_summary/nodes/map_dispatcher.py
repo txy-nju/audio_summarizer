@@ -130,6 +130,7 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
     sends: List[Send] = []
     transcript = state.get("transcript", "")
     user_prompt = state.get("user_prompt", "")
+    structured_global_context = state.get("structured_global_context", {})
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -143,6 +144,7 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
                 {
                     "transcript": transcript,
                     "user_prompt": user_prompt,
+                    "structured_global_context": structured_global_context,
                     "current_chunk": chunk,
                 },
             )
@@ -163,6 +165,7 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
     keyframes = state.get("keyframes", [])
     keyframes_base_path = str(state.get("keyframes_base_path", ""))
     user_prompt = state.get("user_prompt", "")
+    structured_global_context = state.get("structured_global_context", {})
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -177,6 +180,7 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
                     "keyframes": keyframes,
                     "keyframes_base_path": keyframes_base_path,
                     "user_prompt": user_prompt,
+                    "structured_global_context": structured_global_context,
                     "current_chunk": chunk,
                 },
             )

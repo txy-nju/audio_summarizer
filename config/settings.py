@@ -3,6 +3,23 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+
+def _get_int_env(name: str, default: int, minimum: int | None = None) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
+def _get_csv_env(name: str, default_csv: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default_csv)
+    parts = [item.strip() for item in raw.split(",")]
+    return tuple(item for item in parts if item)
+
 # 加载 .env 文件中的环境变量
 # 这会查找与此文件同级的 .env 文件，或者向上查找
 # 我们将 .env 文件放在项目根目录
@@ -11,6 +28,7 @@ load_dotenv(dotenv_path=env_path)  # 从 .env 文件中加载环境变量（如 
 
 # 项目根目录
 BASE_DIR = Path(__file__).resolve().parent.parent  # 获取项目根目录的绝对路径
+VIDEO_SUMMARY_ROOT = Path(os.getenv("VIDEO_SUMMARY_ROOT", str(BASE_DIR))).resolve()
 
 # 临时文件目录
 TEMP_DIR = BASE_DIR / "temp"
@@ -42,6 +60,27 @@ MAP_MAX_PARALLELISM = int(os.getenv("MAP_MAX_PARALLELISM", "4"))
 CHUNK_MAX_TOOL_CALLS = int(os.getenv("CHUNK_MAX_TOOL_CALLS", "2"))
 ENABLE_CHUNK_CACHE = os.getenv("ENABLE_CHUNK_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
 AGGREGATED_CHUNK_INSIGHTS_MAX_CHARS = int(os.getenv("AGGREGATED_CHUNK_INSIGHTS_MAX_CHARS", "24000"))
+
+# 5.5 Outline Bootstrap 配置（第一阶段工程化）
+OUTLINE_STOPWORDS_DIR = Path(
+    os.getenv("OUTLINE_STOPWORDS_DIR", str(VIDEO_SUMMARY_ROOT / "data" / "stopwords"))
+).resolve()
+OUTLINE_ZH_STOPWORDS_PATH = OUTLINE_STOPWORDS_DIR / "zh.txt"
+OUTLINE_EN_STOPWORDS_PATH = OUTLINE_STOPWORDS_DIR / "en.txt"
+OUTLINE_TRIM_RULES_PATH = OUTLINE_STOPWORDS_DIR / "trim_rules.json"
+
+OUTLINE_ENTITY_LIMIT_BASE = _get_int_env("OUTLINE_ENTITY_LIMIT_BASE", 12, minimum=1)
+OUTLINE_ENTITY_LIMIT_MAX = _get_int_env("OUTLINE_ENTITY_LIMIT_MAX", 36, minimum=OUTLINE_ENTITY_LIMIT_BASE)
+OUTLINE_ENTITY_LIMIT_STEP = _get_int_env("OUTLINE_ENTITY_LIMIT_STEP", 4, minimum=1)
+OUTLINE_ENTITY_LIMIT_EVERY_SECONDS = _get_int_env("OUTLINE_ENTITY_LIMIT_EVERY_SECONDS", 1800, minimum=300)
+
+OUTLINE_JIEBA_TOPK = _get_int_env("OUTLINE_JIEBA_TOPK", 12, minimum=1)
+OUTLINE_MIN_TOKEN_LENGTH = _get_int_env("OUTLINE_MIN_TOKEN_LENGTH", 2, minimum=1)
+OUTLINE_MAX_TOKEN_LENGTH = _get_int_env("OUTLINE_MAX_TOKEN_LENGTH", 12, minimum=2)
+OUTLINE_ZH_REGEX_MIN = _get_int_env("OUTLINE_ZH_REGEX_MIN", 2, minimum=1)
+OUTLINE_ZH_REGEX_MAX = _get_int_env("OUTLINE_ZH_REGEX_MAX", 12, minimum=OUTLINE_ZH_REGEX_MIN)
+
+OUTLINE_DOMAIN_SUFFIX_MARKERS = _get_csv_env("OUTLINE_DOMAIN_SUFFIX_MARKERS", "")
 
 # 方案B阶段2：运行指标采样配置
 ENABLE_METRICS_LOGGING = os.getenv("ENABLE_METRICS_LOGGING", "true").strip().lower() in {

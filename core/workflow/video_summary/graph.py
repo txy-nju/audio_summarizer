@@ -2,6 +2,7 @@ from typing import Any
 from langgraph.graph import StateGraph, START, END
 from core.workflow.video_summary.state import VideoSummaryState
 from core.workflow.video_summary.planner.chunk_planner import chunk_planner_node
+from core.workflow.video_summary.nodes.outline_bootstrap import outline_bootstrap_node
 from core.workflow.video_summary.nodes.map_dispatcher import (
     map_dispatch_node,
     synthesis_barrier_node,
@@ -41,6 +42,7 @@ def build_video_summary_graph(checkpointer: Any = None) -> Any:
 
     # 2. 注册节点
     workflow.add_node("chunk_planner_node", chunk_planner_node) # type: ignore
+    workflow.add_node("outline_bootstrap_node", outline_bootstrap_node) # type: ignore
     workflow.add_node("map_dispatch_node", map_dispatch_node) # type: ignore
     workflow.add_node("synthesis_barrier_node", synthesis_barrier_node) # type: ignore
     workflow.add_node("chunk_audio_worker_node", chunk_audio_worker_node) # type: ignore
@@ -52,7 +54,8 @@ def build_video_summary_graph(checkpointer: Any = None) -> Any:
 
     # 3. 编排拓扑连线
     workflow.add_edge(START, "chunk_planner_node")
-    workflow.add_edge("chunk_planner_node", "map_dispatch_node")
+    workflow.add_edge("chunk_planner_node", "outline_bootstrap_node")
+    workflow.add_edge("outline_bootstrap_node", "map_dispatch_node")
 
     workflow.add_conditional_edges("map_dispatch_node", route_audio_send_tasks)
     workflow.add_conditional_edges("map_dispatch_node", route_vision_send_tasks)

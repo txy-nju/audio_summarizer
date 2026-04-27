@@ -77,6 +77,7 @@ class TestMapDispatcherNode(unittest.TestCase):
                 ],
                 "transcript": '{"segments": [{"text": "x"}]}',
                 "user_prompt": "focus",
+                "structured_global_context": {"entities": [{"name": "OpenAI"}]},
                 "chunk_results": [{"chunk_id": "chunk-000", "audio_insights": "old"}],
             },
         )
@@ -89,6 +90,7 @@ class TestMapDispatcherNode(unittest.TestCase):
         arg0 = getattr(sends[0], "arg", {})
         self.assertEqual(arg0.get("current_chunk", {}).get("chunk_id"), "chunk-000")
         self.assertEqual(arg0.get("user_prompt"), "focus")
+        self.assertEqual(arg0.get("structured_global_context", {}).get("entities", []), [{"name": "OpenAI"}])
         self.assertNotIn("current_chunk_base_item", arg0)
 
     def test_route_vision_send_tasks_builds_send_payload(self):
@@ -102,6 +104,7 @@ class TestMapDispatcherNode(unittest.TestCase):
                 "keyframes": [{"time": "00:01", "image": "x"}, {"time": "00:02", "image": "y"}],
                 "keyframes_base_path": "./frames",
                 "user_prompt": "focus",
+                "structured_global_context": {"timeline_anchors": [{"chunk_id": "chunk-000"}]},
                 "chunk_results": [{"chunk_id": "chunk-001", "vision_insights": "old-v"}],
             },
         )
@@ -113,6 +116,7 @@ class TestMapDispatcherNode(unittest.TestCase):
         arg1 = getattr(sends[1], "arg", {})
         self.assertEqual(arg1.get("current_chunk", {}).get("chunk_id"), "chunk-001")
         self.assertEqual(arg1.get("keyframes_base_path"), "./frames")
+        self.assertEqual(arg1.get("structured_global_context", {}).get("timeline_anchors", []), [{"chunk_id": "chunk-000"}])
         self.assertNotIn("current_chunk_base_item", arg1)
 
     def test_synthesis_barrier_marks_ready_only_when_all_chunks_have_audio_and_vision(self):
