@@ -6,9 +6,12 @@ from core.workflow.video_summary.nodes.outline_bootstrap import outline_bootstra
 from core.workflow.video_summary.nodes.map_dispatcher import (
     map_dispatch_node,
     synthesis_barrier_node,
+    route_after_wave_synthesis,
     route_audio_send_tasks,
     route_synthesis_send_tasks,
     route_vision_send_tasks,
+    ROUTE_CONTINUE_WAVE,
+    ROUTE_WAVE_DONE,
 )
 from core.workflow.video_summary.nodes.chunk_audio_analyzer import chunk_audio_worker_node
 from core.workflow.video_summary.nodes.chunk_vision_analyzer import chunk_vision_worker_node
@@ -67,8 +70,17 @@ def build_video_summary_graph(checkpointer: Any = None) -> Any:
 
     workflow.add_edge("chunk_synthesizer_worker_node", "chunk_synthesizer_node")
 
+    # 第三阶段：按波次循环执行，直到所有 chunk 完成 synthesis。
+    workflow.add_conditional_edges(
+        "chunk_synthesizer_node",
+        route_after_wave_synthesis,
+        {
+            ROUTE_CONTINUE_WAVE: "map_dispatch_node",
+            ROUTE_WAVE_DONE: "chunk_aggregator_node",
+        },
+    )
+
     # 分片结果先聚合，再交由成文节点生成草稿
-    workflow.add_edge("chunk_synthesizer_node", "chunk_aggregator_node")
     workflow.add_edge("chunk_aggregator_node", "human_gate_node")
     # human_gate_node 始终以 pending 状态结束第一阶段，交由前端发起人类审批
     workflow.add_edge("human_gate_node", END)

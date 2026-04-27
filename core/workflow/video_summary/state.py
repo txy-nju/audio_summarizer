@@ -107,6 +107,8 @@ class VideoSummaryState(TypedDict):
     video_duration_seconds: int     # 写入: chunk_planner_node；消费: 主要用于观测和测试，当前主链路不直接依赖
     chunk_plan: List[Dict]          # 写入: chunk_planner_node；消费: map_dispatch_node / worker 路由函数 / chunk_synthesizer_node / chunk_aggregator_node
     chunk_results: Annotated[List[Dict], _merge_chunk_results]  # 写入: audio/vision/synthesizer 各节点与对应 worker；消费: synthesis_barrier_node / chunk_synthesizer_node / chunk_aggregator_node / 进度上报逻辑
+    active_wave_chunk_ids: List[str]  # 写入: map_dispatch_node；消费: audio/vision/synthesis 路由与 barrier
+    wave_index: int                # 写入: map_dispatch_node；消费: 调度诊断、前端可观测
     current_chunk: Dict             # 写入: route_audio_send_tasks / route_vision_send_tasks；消费: chunk_audio_worker_node / chunk_vision_worker_node
     current_synthesis_chunk: Dict   # 写入: route_synthesis_send_tasks；消费: chunk_synthesizer_worker_node
     current_synthesis_base_item: Dict  # 写入: route_synthesis_send_tasks；消费: chunk_synthesizer_worker_node

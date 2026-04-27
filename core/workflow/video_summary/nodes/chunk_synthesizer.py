@@ -4,10 +4,30 @@ from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
+from config.settings import (
+    CHUNK_DEGRADED_MARKER,
+    CHUNK_WORKER_MAX_RETRIES,
+    CHUNK_WORKER_TIMEOUT_SECONDS,
+)
 from core.workflow.video_summary.state import VideoSummaryState
 
 
-def _llm_chunk_fusion(chunk_id: str, audio_insights: str, vision_insights: str, user_prompt: str) -> str:
+def _classify_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "empty summary" in text:
+        return "degraded"
+    return "failed"
+
+
+def _llm_chunk_fusion(
+    chunk_id: str,
+    audio_insights: str,
+    vision_insights: str,
+    user_prompt: str,
+    timeout_seconds: float,
+) -> str:
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     if not api_key:
@@ -37,6 +57,7 @@ def _llm_chunk_fusion(chunk_id: str, audio_insights: str, vision_insights: str, 
             },
         ],
         temperature=0.3,
+        timeout=timeout_seconds,
     )
     return response.choices[0].message.content or ""
 
@@ -50,20 +71,60 @@ def _process_single_chunk_synthesis(
     audio_insights = str(base_item.get("audio_insights", ""))
     vision_insights = str(base_item.get("vision_insights", ""))
 
+    status = "ok"
     try:
-        chunk_summary = _llm_chunk_fusion(chunk_id, audio_insights, vision_insights, user_prompt)
+        chunk_summary = _llm_chunk_fusion(
+            chunk_id,
+            audio_insights,
+            vision_insights,
+            user_prompt,
+            CHUNK_WORKER_TIMEOUT_SECONDS,
+        )
+        if not str(chunk_summary).strip():
+            raise ValueError("empty summary")
     except Exception as exc:
-        chunk_summary = f"[chunk={chunk_id}] 分片融合降级：{str(exc)}"
+        status = _classify_error(exc)
+        chunk_summary = f"{CHUNK_DEGRADED_MARKER}:synthesizer:{status}:{str(exc)}"
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     delta = {
         "chunk_id": chunk_id,
         "chunk_summary": chunk_summary,
+        "modality_status": {
+            "synthesizer": status,
+        },
         "latency_ms": {
             "synthesizer": latency_ms,
         },
     }
     return chunk_id, delta
+
+
+def _run_synthesis_with_retry(
+    chunk_id: str,
+    user_prompt: str,
+    base_item: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
+    last_delta: Dict[str, Any] = {
+        "chunk_id": chunk_id,
+        "chunk_summary": f"{CHUNK_DEGRADED_MARKER}:synthesizer:failed:no_attempt",
+        "modality_status": {"synthesizer": "failed"},
+        "latency_ms": {"synthesizer": 0},
+    }
+
+    retries_used = 0
+    for attempt in range(CHUNK_WORKER_MAX_RETRIES + 1):
+        _, delta = _process_single_chunk_synthesis(chunk_id, user_prompt, base_item)
+        last_delta = dict(delta)
+        status = str(last_delta.get("modality_status", {}).get("synthesizer", "ok")).strip().lower()
+        retries_used = attempt
+        if status == "ok":
+            break
+
+    status = str(last_delta.get("modality_status", {}).get("synthesizer", "failed")).strip().lower()
+    last_delta["chunk_retry_count"] = {"synthesizer": retries_used}
+    last_delta["degraded_context"] = {"synthesizer": status != "ok"}
+    return chunk_id, last_delta
 
 
 def chunk_synthesizer_node(state: VideoSummaryState) -> dict:
@@ -141,7 +202,7 @@ def chunk_synthesizer_worker_node(state: VideoSummaryState) -> dict:
     if not isinstance(base_item, dict):
         base_item = {"chunk_id": chunk_id}
 
-    _, merged = _process_single_chunk_synthesis(
+    _, merged = _run_synthesis_with_retry(
         chunk_id,
         user_prompt,
         base_item,

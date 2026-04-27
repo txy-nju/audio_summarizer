@@ -6,7 +6,13 @@ from typing import Any, Dict, List
 
 from openai import OpenAI
 
-from config.settings import CHUNK_MAX_TOOL_CALLS, ENABLE_CHUNK_CACHE
+from config.settings import (
+    CHUNK_DEGRADED_MARKER,
+    CHUNK_MAX_TOOL_CALLS,
+    CHUNK_WORKER_MAX_RETRIES,
+    CHUNK_WORKER_TIMEOUT_SECONDS,
+    ENABLE_CHUNK_CACHE,
+)
 from core.workflow.video_summary.state import VideoSummaryState
 from core.workflow.video_summary.tools.search_tools import execute_tavily_search
 from core.workflow.video_summary.utils.frame_utils import resolve_frame_image_base64
@@ -76,11 +82,19 @@ def _normalize_structured_payload(payload: Dict[str, Any], fallback_summary: str
     }
 
 
+def _classify_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    return "failed"
+
+
 def _llm_vision_chunk_structured(
     chunk_id: str,
     frames: List[FramePayload],
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    timeout_seconds: float,
 ) -> Dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
@@ -132,6 +146,7 @@ def _llm_vision_chunk_structured(
         temperature=0.2,
         max_tokens=1024,
         response_format={"type": "json_object"},
+        timeout=timeout_seconds,
     )
     raw_content = response.choices[0].message.content or ""
     try:
@@ -143,6 +158,32 @@ def _llm_vision_chunk_structured(
 
     fallback_summary = f"[chunk={chunk_id}] 视觉分析结果为空，已降级。"
     return _normalize_structured_payload(parsed, fallback_summary)
+
+
+def _run_vision_with_retry(
+    chunk_id: str,
+    frames: List[FramePayload],
+    user_prompt: str,
+    structured_global_context: Dict[str, Any],
+) -> tuple[Dict[str, Any], str, int]:
+    last_error: Exception | None = None
+    for attempt in range(CHUNK_WORKER_MAX_RETRIES + 1):
+        try:
+            structured = _llm_vision_chunk_structured(
+                chunk_id=chunk_id,
+                frames=frames,
+                user_prompt=user_prompt,
+                structured_global_context=structured_global_context,
+                timeout_seconds=CHUNK_WORKER_TIMEOUT_SECONDS,
+            )
+            return structured, "ok", attempt
+        except Exception as exc:
+            last_error = exc
+
+    status = _classify_error(last_error or Exception("vision worker failed"))
+    reason = f"{CHUNK_DEGRADED_MARKER}:vision:{status}:retries_exhausted"
+    structured = _build_vision_structured_fallback(chunk_id, frames, reason)
+    return structured, status, CHUNK_WORKER_MAX_RETRIES
 
 
 def _process_single_chunk_vision(
@@ -166,17 +207,23 @@ def _process_single_chunk_vision(
             selected_frames.append(normalized_frame)
 
     if not selected_frames:
-        structured_insights = _build_vision_structured_fallback(chunk_id, selected_frames, f"[chunk={chunk_id}] 无可用关键帧证据。")
+        structured_insights = _build_vision_structured_fallback(
+            chunk_id,
+            selected_frames,
+            f"{CHUNK_DEGRADED_MARKER}:vision:degraded:no_keyframe_evidence",
+        )
         insights = structured_insights["final_summary"]
+        vision_status = "degraded"
+        retry_count = 0
         searches: List[Dict[str, str]] = []
     else:
-        try:
-            structured_insights = _llm_vision_chunk_structured(chunk_id, selected_frames, user_prompt, structured_global_context)
-            insights = str(structured_insights.get("final_summary", "")).strip() or f"[chunk={chunk_id}] 证据不足。"
-        except Exception as exc:
-            fallback = f"[chunk={chunk_id}] 视觉分析降级：{str(exc)}"
-            structured_insights = _build_vision_structured_fallback(chunk_id, selected_frames, fallback)
-            insights = structured_insights["final_summary"]
+        structured_insights, vision_status, retry_count = _run_vision_with_retry(
+            chunk_id,
+            selected_frames,
+            user_prompt,
+            structured_global_context,
+        )
+        insights = str(structured_insights.get("final_summary", "")).strip() or f"{CHUNK_DEGRADED_MARKER}:vision:{vision_status}:empty_summary"
 
         searches = []
         for frame in selected_frames[: max(0, CHUNK_MAX_TOOL_CALLS)]:
@@ -196,6 +243,15 @@ def _process_single_chunk_vision(
         },
         "token_usage": {
             "vision": 0,
+        },
+        "modality_status": {
+            "vision": vision_status,
+        },
+        "chunk_retry_count": {
+            "vision": retry_count,
+        },
+        "degraded_context": {
+            "vision": vision_status != "ok",
         },
         "latency_ms": {
             "vision": latency_ms,

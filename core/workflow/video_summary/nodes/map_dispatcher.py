@@ -1,7 +1,56 @@
 from typing import Any, Dict, List
 from langgraph.types import Send
 
+from config.settings import WAVE_DISPATCH_SIZE
 from core.workflow.video_summary.state import VideoSummaryState
+
+
+ROUTE_CONTINUE_WAVE = "continue_wave"
+ROUTE_WAVE_DONE = "wave_done"
+
+
+def _chunk_ids_from_plan(chunk_plan: List[Dict[str, Any]]) -> List[str]:
+    ids: List[str] = []
+    for chunk in chunk_plan:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_id = str(chunk.get("chunk_id", "")).strip()
+        if chunk_id:
+            ids.append(chunk_id)
+    return ids
+
+
+def _build_result_map(chunk_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        str(item.get("chunk_id", "")).strip(): dict(item)
+        for item in chunk_results
+        if isinstance(item, dict) and str(item.get("chunk_id", "")).strip()
+    }
+
+
+def _is_chunk_synthesized(item: Dict[str, Any]) -> bool:
+    if bool(str(item.get("chunk_summary", "")).strip()):
+        return True
+
+    modality_status = item.get("modality_status", {})
+    if isinstance(modality_status, dict):
+        status = str(modality_status.get("synthesizer", "")).strip().lower()
+        if status in {"timeout", "failed", "degraded"}:
+            return True
+    return False
+
+
+def _modality_ready(item: Dict[str, Any], modality: str) -> bool:
+    insights_key = f"{modality}_insights"
+    if bool(str(item.get(insights_key, "")).strip()):
+        return True
+
+    modality_status = item.get("modality_status", {})
+    if isinstance(modality_status, dict):
+        status = str(modality_status.get(modality, "")).strip().lower()
+        if status in {"timeout", "failed", "degraded"}:
+            return True
+    return False
 
 
 def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
@@ -42,6 +91,18 @@ def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
             continue
         retry_count.setdefault(chunk_id, 0)
 
+    chunk_results = state.get("chunk_results", [])
+    if not isinstance(chunk_results, list):
+        chunk_results = []
+
+    chunk_ids = _chunk_ids_from_plan(chunk_plan)
+    result_map = _build_result_map(chunk_results)
+    pending_chunk_ids = [chunk_id for chunk_id in chunk_ids if not _is_chunk_synthesized(result_map.get(chunk_id, {}))]
+
+    active_wave_chunk_ids = pending_chunk_ids[: max(1, WAVE_DISPATCH_SIZE)]
+    completed_count = len(chunk_ids) - len(pending_chunk_ids)
+    wave_index = completed_count // max(1, WAVE_DISPATCH_SIZE)
+
     reduce_debug_info = state.get("reduce_debug_info", {})
     if not isinstance(reduce_debug_info, dict):
         reduce_debug_info = {}
@@ -50,13 +111,19 @@ def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
         {
             "dispatch_ready": True,
             "chunk_count": len(chunk_plan),
-            "dispatch_strategy": "send-api-dual-pilot",
+            "dispatch_strategy": "send-api-wave-pilot",
+            "wave_size": max(1, WAVE_DISPATCH_SIZE),
+            "wave_index": wave_index,
+            "wave_active_chunk_ids": active_wave_chunk_ids,
+            "wave_pending_chunks": len(pending_chunk_ids),
         }
     )
 
     return {
-        "chunk_results": state.get("chunk_results", []),
+        "chunk_results": chunk_results,
         "chunk_retry_count": retry_count,
+        "active_wave_chunk_ids": active_wave_chunk_ids,
+        "wave_index": wave_index,
         "reduce_debug_info": reduce_debug_info,
     }
 
@@ -89,19 +156,22 @@ def synthesis_barrier_node(state: VideoSummaryState) -> Dict[str, Any]:
     chunk_plan = state.get("chunk_plan", [])
     if not isinstance(chunk_plan, list):
         chunk_plan = []
-    total_chunks = len(chunk_plan)
+    wave_chunk_ids = state.get("active_wave_chunk_ids", [])
+    if not isinstance(wave_chunk_ids, list):
+        wave_chunk_ids = []
+    if not wave_chunk_ids:
+        wave_chunk_ids = _chunk_ids_from_plan(chunk_plan)
+    total_chunks = len(wave_chunk_ids)
 
     chunk_results = state.get("chunk_results", [])
     if not isinstance(chunk_results, list):
         chunk_results = []
 
+    result_map = _build_result_map(chunk_results)
     ready_chunk_ids = {
-        str(item.get("chunk_id", "")).strip()
-        for item in chunk_results
-        if isinstance(item, dict)
-        and str(item.get("chunk_id", "")).strip()
-        and str(item.get("audio_insights", "")).strip()
-        and str(item.get("vision_insights", "")).strip()
+        chunk_id
+        for chunk_id in wave_chunk_ids
+        if _modality_ready(result_map.get(chunk_id, {}), "audio") and _modality_ready(result_map.get(chunk_id, {}), "vision")
     }
 
     reduce_debug_info.update(
@@ -110,6 +180,7 @@ def synthesis_barrier_node(state: VideoSummaryState) -> Dict[str, Any]:
             "synthesis_ready_chunks": len(ready_chunk_ids),
             "synthesis_total_chunks": total_chunks,
             "synthesis_ready": total_chunks > 0 and len(ready_chunk_ids) == total_chunks,
+            "synthesis_wave_chunk_ids": wave_chunk_ids,
         }
     )
 
@@ -127,6 +198,11 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
     if not isinstance(chunk_plan, list):
         return []
 
+    active_wave_chunk_ids = state.get("active_wave_chunk_ids", [])
+    if not isinstance(active_wave_chunk_ids, list):
+        active_wave_chunk_ids = []
+    active_wave_set = {str(item).strip() for item in active_wave_chunk_ids if str(item).strip()}
+
     sends: List[Send] = []
     transcript = state.get("transcript", "")
     user_prompt = state.get("user_prompt", "")
@@ -136,6 +212,8 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
             continue
         chunk_id = str(chunk.get("chunk_id", "")).strip()
         if not chunk_id:
+            continue
+        if active_wave_set and chunk_id not in active_wave_set:
             continue
 
         sends.append(
@@ -161,6 +239,11 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
     if not isinstance(chunk_plan, list):
         return []
 
+    active_wave_chunk_ids = state.get("active_wave_chunk_ids", [])
+    if not isinstance(active_wave_chunk_ids, list):
+        active_wave_chunk_ids = []
+    active_wave_set = {str(item).strip() for item in active_wave_chunk_ids if str(item).strip()}
+
     sends: List[Send] = []
     keyframes = state.get("keyframes", [])
     keyframes_base_path = str(state.get("keyframes_base_path", ""))
@@ -171,6 +254,8 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
             continue
         chunk_id = str(chunk.get("chunk_id", "")).strip()
         if not chunk_id:
+            continue
+        if active_wave_set and chunk_id not in active_wave_set:
             continue
 
         sends.append(
@@ -199,12 +284,19 @@ def route_synthesis_send_tasks(state: VideoSummaryState) -> List[Send]:
     if not isinstance(chunk_plan, list) or not chunk_plan:
         return []
 
+    active_wave_chunk_ids = state.get("active_wave_chunk_ids", [])
+    if not isinstance(active_wave_chunk_ids, list):
+        active_wave_chunk_ids = []
+    active_wave_set = {str(item).strip() for item in active_wave_chunk_ids if str(item).strip()}
+
     planned_chunk_ids: List[str] = []
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
         chunk_id = str(chunk.get("chunk_id", "")).strip()
         if chunk_id:
+            if active_wave_set and chunk_id not in active_wave_set:
+                continue
             planned_chunk_ids.append(chunk_id)
 
     if not planned_chunk_ids:
@@ -214,18 +306,14 @@ def route_synthesis_send_tasks(state: VideoSummaryState) -> List[Send]:
     if not isinstance(chunk_results, list):
         return []
 
-    result_map: Dict[str, Dict[str, Any]] = {
-        str(item.get("chunk_id", "")).strip(): dict(item)
-        for item in chunk_results
-        if isinstance(item, dict) and str(item.get("chunk_id", "")).strip()
-    }
+    result_map: Dict[str, Dict[str, Any]] = _build_result_map(chunk_results)
 
     # 触发时机保底：必须等待 audio_worker 和 vision_worker 整理完全部 chunk。
     all_ready = True
     for chunk_id in planned_chunk_ids:
         item = result_map.get(chunk_id, {})
-        has_audio = bool(str(item.get("audio_insights", "")).strip())
-        has_vision = bool(str(item.get("vision_insights", "")).strip())
+        has_audio = _modality_ready(item, "audio")
+        has_vision = _modality_ready(item, "vision")
         if not (has_audio and has_vision):
             all_ready = False
             break
@@ -241,14 +329,16 @@ def route_synthesis_send_tasks(state: VideoSummaryState) -> List[Send]:
         chunk_id = str(chunk.get("chunk_id", "")).strip()
         if not chunk_id:
             continue
+        if active_wave_set and chunk_id not in active_wave_set:
+            continue
 
         base_item = result_map.get(chunk_id, {"chunk_id": chunk_id})
         # 幂等：已生成 chunk_summary 的分片不重复派发
         if str(base_item.get("chunk_summary", "")).strip():
             continue
-        if not str(base_item.get("audio_insights", "")).strip():
+        if not _modality_ready(base_item, "audio"):
             continue
-        if not str(base_item.get("vision_insights", "")).strip():
+        if not _modality_ready(base_item, "vision"):
             continue
 
         sends.append(
@@ -263,3 +353,23 @@ def route_synthesis_send_tasks(state: VideoSummaryState) -> List[Send]:
         )
 
     return sends
+
+
+def route_after_wave_synthesis(state: VideoSummaryState) -> str:
+    """
+    波次执行后的路由：若仍有未完成 chunk，继续下一波；否则进入聚合。
+    """
+    chunk_plan = state.get("chunk_plan", [])
+    if not isinstance(chunk_plan, list) or not chunk_plan:
+        return ROUTE_WAVE_DONE
+
+    chunk_results = state.get("chunk_results", [])
+    if not isinstance(chunk_results, list):
+        chunk_results = []
+
+    result_map = _build_result_map(chunk_results)
+    for chunk_id in _chunk_ids_from_plan(chunk_plan):
+        if not _is_chunk_synthesized(result_map.get(chunk_id, {})):
+            return ROUTE_CONTINUE_WAVE
+
+    return ROUTE_WAVE_DONE

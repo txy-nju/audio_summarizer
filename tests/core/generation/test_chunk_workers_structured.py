@@ -110,6 +110,24 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
         self.assertIn("context_calibration", item["audio_structured_analysis"])
         self.assertIn("final_summary", item["audio_structured_analysis"])
 
+    @patch("core.workflow.video_summary.nodes.chunk_audio_analyzer._llm_audio_chunk_structured", side_effect=TimeoutError("request timeout"))
+    def test_audio_worker_timeout_degrades_without_blocking(self, _mock_llm):
+        state = cast(
+            VideoSummaryState,
+            {
+                "current_chunk": {"chunk_id": "chunk-timeout-a", "transcript_segment_indexes": [0]},
+                "transcript": '{"segments": [{"text": "audio evidence"}]}',
+                "user_prompt": "",
+                "structured_global_context": {},
+            },
+        )
+
+        result = chunk_audio_worker_node(state)
+        item = result["chunk_results"][0]
+        self.assertEqual(item.get("modality_status", {}).get("audio"), "timeout")
+        self.assertIn("<missing_context>", str(item.get("audio_insights", "")))
+        self.assertTrue(item.get("degraded_context", {}).get("audio"))
+
     @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer.OpenAI")
     def test_vision_llm_prompt_contains_evidence_tier_rules(self, mock_openai):
         mock_response = MagicMock()
@@ -140,6 +158,25 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
         self.assertIn("二级证据 (context_calibration)", system_content)
         self.assertIn("绝对禁止用大纲来捏造", system_content)
         self.assertIn("证据不足", system_content)
+
+    @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer._llm_vision_chunk_structured", side_effect=TimeoutError("request timeout"))
+    def test_vision_worker_timeout_degrades_without_blocking(self, _mock_llm):
+        state = cast(
+            VideoSummaryState,
+            {
+                "current_chunk": {"chunk_id": "chunk-timeout-v", "keyframe_indexes": [0]},
+                "keyframes": [{"time": "00:05", "image": "aGVsbG8="}],
+                "keyframes_base_path": "",
+                "user_prompt": "",
+                "structured_global_context": {},
+            },
+        )
+
+        result = chunk_vision_worker_node(state)
+        item = result["chunk_results"][0]
+        self.assertEqual(item.get("modality_status", {}).get("vision"), "timeout")
+        self.assertIn("<missing_context>", str(item.get("vision_insights", "")))
+        self.assertTrue(item.get("degraded_context", {}).get("vision"))
 
 
 if __name__ == "__main__":

@@ -87,6 +87,27 @@ class TestChunkSynthesizerNode(unittest.TestCase):
         result = chunk_synthesizer_worker_node(state)
         self.assertEqual(result["chunk_results"], [])
 
+    @patch("core.workflow.video_summary.nodes.chunk_synthesizer._llm_chunk_fusion", side_effect=TimeoutError("timeout"))
+    def test_chunk_synthesizer_worker_timeout_marks_terminal_degraded(self, _mock_fusion):
+        state = cast(
+            VideoSummaryState,
+            {
+                "current_synthesis_chunk": {"chunk_id": "chunk-timeout"},
+                "current_synthesis_base_item": {
+                    "chunk_id": "chunk-timeout",
+                    "audio_insights": "a",
+                    "vision_insights": "v",
+                },
+                "user_prompt": "focus",
+            },
+        )
+
+        result = chunk_synthesizer_worker_node(state)
+        item = result["chunk_results"][0]
+        self.assertEqual(item.get("modality_status", {}).get("synthesizer"), "timeout")
+        self.assertIn("<missing_context>", str(item.get("chunk_summary", "")))
+        self.assertTrue(item.get("degraded_context", {}).get("synthesizer"))
+
 
 if __name__ == "__main__":
     unittest.main()
