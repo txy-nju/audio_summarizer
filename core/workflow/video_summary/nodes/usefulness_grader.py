@@ -2,9 +2,7 @@ import os
 import json
 from openai import OpenAI
 from core.workflow.video_summary.state import VideoSummaryState
-
-# [消除魔法数字]: 将最大重写次数提炼为模块级常量，与幻觉评分器保持一致
-MAX_REVISIONS = 2
+from config.settings import SELF_RAG_MAX_REVISIONS as MAX_REVISIONS
 
 def usefulness_grader_node(state: VideoSummaryState) -> dict:
     """
@@ -37,6 +35,7 @@ def usefulness_grader_node(state: VideoSummaryState) -> dict:
     user_prompt = state.get("user_prompt", "")
     human_guidance = state.get("human_guidance", "")
     revision_count = state.get("revision_count", 0)
+    aggregated_chunk_insights = state.get("aggregated_chunk_insights", "")
 
     # user_prompt 与 human_guidance 共同构成有用性评分的审核要求。
     review_requirements = []
@@ -63,14 +62,27 @@ def usefulness_grader_node(state: VideoSummaryState) -> dict:
     system_prompt = (
         "你是一名严格的用户体验评估官 (Usefulness Grader)。\n"
         "你的唯一任务是评估【总结草稿】是否充分、准确地回应了用户的【特定总结侧重点】。\n\n"
+        "【核心约束 - 防止幻觉放大】：\n"
+        "你提供的修改指令必须严格限定在【视频原始证据】范围内。\n"
+        "- 你只能要求草稿调整对已有证据的侧重、排版或措辞表达。\n"
+        "- 你绝对不能要求草稿添加视频原始证据中不存在的内容。\n"
+        "- 若用户期望的内容在原始证据中确实不存在，score 应为 \"yes\"（即：证据边界内已尽力满足）并在 reason 中说明证据缺失，而不是要求凭空补充。\n\n"
         "【严格 JSON 格式输出要求】：\n"
         "你必须输出一个合法且格式化良好的 JSON 对象，包含以下两个字段：\n"
-        "1. \"score\": 字符串，只能是 \"yes\"（草稿很好地满足了用户需求）或 \"no\"（草稿偏题、遗漏了用户的核心要求）。\n"
-        "2. \"reason\": 字符串，如果 score 为 \"no\"，请给出极其明确的修改指令（例如：'用户要求侧重讲解微服务架构，但草稿完全没有提到，请在第二段大幅补充架构相关的技术细节'）；如果 score 为 \"yes\"，置为空字符串 \"\"。"
+        "1. \"score\": 字符串，只能是 \"yes\"（草稿在证据范围内已充分满足用户需求）或 \"no\"（证据中存在相关内容但草稿未使用或偏离方向）。\n"
+        "2. \"reason\": 字符串，如果 score 为 \"no\"，给出明确修改指令，且指令必须基于【视频原始证据】中实际存在的内容；如果 score 为 \"yes\"，置为空字符串 \"\"。"
     )
 
+    evidence_boundary = str(aggregated_chunk_insights).strip() if aggregated_chunk_insights else ""
+    evidence_section = (
+        f"\n====== 视频原始证据边界 (Evidence Boundary) ======\n"
+        f"{evidence_boundary}\n"
+        f"================================================\n"
+    ) if evidence_boundary else ""
+
     user_content = (
-        f"【审核要求（原始需求 + 人类审批意见）】：\n{review_requirements_text}\n\n"
+        f"【审核要求（原始需求 + 人类审批意见）】：\n{review_requirements_text}\n"
+        f"{evidence_section}\n"
         f"【待评估的总结草稿】：\n{draft}"
     )
 

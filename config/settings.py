@@ -119,5 +119,8 @@ KEYFRAME_REFERENCE_INCLUDE_INLINE_IMAGE = os.getenv(
 ).strip().lower() in {"1", "true", "yes", "on"}
 KEYFRAME_IMAGE_EXTENSION = os.getenv("KEYFRAME_IMAGE_EXTENSION", "jpg").strip().lower() or "jpg"
 
+# Self-RAG 质量闭环熔断配置
+SELF_RAG_MAX_REVISIONS = _get_int_env("SELF_RAG_MAX_REVISIONS", 2, minimum=1)
+
 # 并发模式配置（架构瘦身后固定为 send_api）
 CONCURRENCY_MODE = "send_api"

@@ -2,9 +2,7 @@ import os
 import json
 from openai import OpenAI
 from core.workflow.video_summary.state import VideoSummaryState
-
-# [消除魔法数字]: 将最大重写次数提炼为模块级常量
-MAX_REVISIONS = 2
+from config.settings import SELF_RAG_MAX_REVISIONS as MAX_REVISIONS
 
 def hallucination_grader_node(state: VideoSummaryState) -> dict:
     """

@@ -21,6 +21,7 @@ class TestUsefulnessGraderNode(unittest.TestCase):
             "keyframes": [],
             "user_prompt": "侧重芯片性能的描述",
             "draft_summary": "这是一款很棒的手机，性能很强。",
+            "aggregated_chunk_insights": "音频：发布会介绍了骁龙8 Gen3芯片，跑分达到200万。视觉：PPT 展示了芯片架构图。",
             "revision_count": 0,
             "hallucination_score": "no",  # 前置条件：已通过幻觉审查
             "usefulness_score": "",
@@ -152,6 +153,56 @@ class TestUsefulnessGraderNode(unittest.TestCase):
         print_args_timeout = [call_args[0][0] for call_args in mock_print.call_args_list]
         timeout_error_logged = any("API Server Timeout" in arg for arg in print_args_timeout)
         self.assertTrue(timeout_error_logged, "系统应当详细记录 API 超时导致降级的日志")
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123"})
+    @patch('core.workflow.video_summary.nodes.usefulness_grader.OpenAI')
+    def test_grader_injects_evidence_boundary_into_llm_call(self, mock_openai_class):
+        """新增：aggregated_chunk_insights 应当被注入为证据边界，出现在 LLM user_content 中"""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({"score": "yes", "reason": ""})
+        mock_client.chat.completions.create.return_value = mock_response
+
+        usefulness_grader_node(self.valid_state)
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs.get("messages", [])
+        user_content = next(
+            (m["content"] for m in messages if m.get("role") == "user"), ""
+        )
+        self.assertIn("骁龙8 Gen3", user_content)
+        self.assertIn("Evidence Boundary", user_content)
+
+        # system prompt 应包含防幻觉放大约束
+        system_content = next(
+            (m["content"] for m in messages if m.get("role") == "system"), ""
+        )
+        self.assertIn("防止幻觉放大", system_content)
+        self.assertIn("证据边界", system_content)
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "fake_key_123"})
+    @patch('core.workflow.video_summary.nodes.usefulness_grader.OpenAI')
+    def test_grader_gracefully_handles_empty_insights(self, mock_openai_class):
+        """新增：aggregated_chunk_insights 为空时不崩溃，证据边界块不出现在 user_content 中"""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({"score": "yes", "reason": ""})
+        mock_client.chat.completions.create.return_value = mock_response
+
+        for empty_val in ("", None, "   "):
+            state = {**self.valid_state, "aggregated_chunk_insights": empty_val}
+            result = usefulness_grader_node(state)
+            self.assertEqual(result["usefulness_score"], "yes")
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            messages = call_kwargs.get("messages", [])
+            user_content = next(
+                (m["content"] for m in messages if m.get("role") == "user"), ""
+            )
+            self.assertNotIn("Evidence Boundary", user_content)
+
 
 if __name__ == '__main__':
     unittest.main()
