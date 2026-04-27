@@ -64,6 +64,10 @@ if CHUNK_WORKER_TIMEOUT_SECONDS <= 0:
 CHUNK_WORKER_MAX_RETRIES = _get_int_env("CHUNK_WORKER_MAX_RETRIES", 1, minimum=0)
 CHUNK_DEGRADED_MARKER = os.getenv("CHUNK_DEGRADED_MARKER", "<missing_context>").strip() or "<missing_context>"
 
+# 5.7 第四阶段：上下文记忆滑动窗口配置
+CONTEXT_MEMORY_WINDOW_SIZE = _get_int_env("CONTEXT_MEMORY_WINDOW_SIZE", 2, minimum=1)
+CONTEXT_MEMORY_SUMMARY_MAX_CHARS = _get_int_env("CONTEXT_MEMORY_SUMMARY_MAX_CHARS", 160, minimum=60)
+
 # 5.3 Map-Reduce（迭代 B）配置
 CHUNK_MAX_TOOL_CALLS = int(os.getenv("CHUNK_MAX_TOOL_CALLS", "2"))
 ENABLE_CHUNK_CACHE = os.getenv("ENABLE_CHUNK_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}

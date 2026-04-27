@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 from langgraph.types import Send
 
-from config.settings import WAVE_DISPATCH_SIZE
+from config.settings import CONTEXT_MEMORY_SUMMARY_MAX_CHARS, CONTEXT_MEMORY_WINDOW_SIZE, WAVE_DISPATCH_SIZE
 from core.workflow.video_summary.state import VideoSummaryState
 
 
@@ -53,6 +53,52 @@ def _modality_ready(item: Dict[str, Any], modality: str) -> bool:
     return False
 
 
+def _compress_summary(summary: str) -> str:
+    normalized = " ".join(str(summary or "").split())
+    if len(normalized) <= CONTEXT_MEMORY_SUMMARY_MAX_CHARS:
+        return normalized
+    return normalized[: CONTEXT_MEMORY_SUMMARY_MAX_CHARS].rstrip()
+
+
+def _build_chunk_summary_memory(chunk_ids: List[str], result_map: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    memory: Dict[str, str] = {}
+    for chunk_id in chunk_ids:
+        item = result_map.get(chunk_id, {})
+        summary = _compress_summary(str(item.get("chunk_summary", "")))
+        if summary:
+            memory[chunk_id] = summary
+    return memory
+
+
+def _build_previous_chunk_summaries_by_chunk(
+    chunk_ids: List[str],
+    active_wave_chunk_ids: List[str],
+    chunk_summary_memory: Dict[str, str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    previous_by_chunk: Dict[str, List[Dict[str, Any]]] = {}
+    id_to_index = {chunk_id: idx for idx, chunk_id in enumerate(chunk_ids)}
+    window_size = max(1, CONTEXT_MEMORY_WINDOW_SIZE)
+
+    for chunk_id in active_wave_chunk_ids:
+        if chunk_id not in id_to_index:
+            previous_by_chunk[chunk_id] = []
+            continue
+
+        current_index = id_to_index[chunk_id]
+        start = max(0, current_index - window_size)
+        previous_items: List[Dict[str, Any]] = []
+        for prev_index in range(start, current_index):
+            prev_chunk_id = chunk_ids[prev_index]
+            summary = chunk_summary_memory.get(prev_chunk_id, "")
+            if not summary:
+                continue
+            previous_items.append({"chunk_id": prev_chunk_id, "summary": summary})
+
+        previous_by_chunk[chunk_id] = previous_items
+
+    return previous_by_chunk
+
+
 def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
     """
     分发准备节点。
@@ -100,6 +146,12 @@ def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
     pending_chunk_ids = [chunk_id for chunk_id in chunk_ids if not _is_chunk_synthesized(result_map.get(chunk_id, {}))]
 
     active_wave_chunk_ids = pending_chunk_ids[: max(1, WAVE_DISPATCH_SIZE)]
+    chunk_summary_memory = _build_chunk_summary_memory(chunk_ids, result_map)
+    previous_chunk_summaries_by_chunk = _build_previous_chunk_summaries_by_chunk(
+        chunk_ids,
+        active_wave_chunk_ids,
+        chunk_summary_memory,
+    )
     completed_count = len(chunk_ids) - len(pending_chunk_ids)
     wave_index = completed_count // max(1, WAVE_DISPATCH_SIZE)
 
@@ -116,12 +168,15 @@ def map_dispatch_node(state: VideoSummaryState) -> Dict[str, Any]:
             "wave_index": wave_index,
             "wave_active_chunk_ids": active_wave_chunk_ids,
             "wave_pending_chunks": len(pending_chunk_ids),
+            "context_memory_size": len(chunk_summary_memory),
         }
     )
 
     return {
         "chunk_results": chunk_results,
         "chunk_retry_count": retry_count,
+        "chunk_summary_memory": chunk_summary_memory,
+        "previous_chunk_summaries_by_chunk": previous_chunk_summaries_by_chunk,
         "active_wave_chunk_ids": active_wave_chunk_ids,
         "wave_index": wave_index,
         "reduce_debug_info": reduce_debug_info,
@@ -207,6 +262,9 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
     transcript = state.get("transcript", "")
     user_prompt = state.get("user_prompt", "")
     structured_global_context = state.get("structured_global_context", {})
+    previous_chunk_summaries_by_chunk = state.get("previous_chunk_summaries_by_chunk", {})
+    if not isinstance(previous_chunk_summaries_by_chunk, dict):
+        previous_chunk_summaries_by_chunk = {}
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -223,6 +281,7 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
                     "transcript": transcript,
                     "user_prompt": user_prompt,
                     "structured_global_context": structured_global_context,
+                    "previous_chunk_summaries": previous_chunk_summaries_by_chunk.get(chunk_id, []),
                     "current_chunk": chunk,
                 },
             )
@@ -249,6 +308,9 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
     keyframes_base_path = str(state.get("keyframes_base_path", ""))
     user_prompt = state.get("user_prompt", "")
     structured_global_context = state.get("structured_global_context", {})
+    previous_chunk_summaries_by_chunk = state.get("previous_chunk_summaries_by_chunk", {})
+    if not isinstance(previous_chunk_summaries_by_chunk, dict):
+        previous_chunk_summaries_by_chunk = {}
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -266,6 +328,7 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
                     "keyframes_base_path": keyframes_base_path,
                     "user_prompt": user_prompt,
                     "structured_global_context": structured_global_context,
+                    "previous_chunk_summaries": previous_chunk_summaries_by_chunk.get(chunk_id, []),
                     "current_chunk": chunk,
                 },
             )

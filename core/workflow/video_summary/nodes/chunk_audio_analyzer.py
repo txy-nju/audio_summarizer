@@ -97,7 +97,7 @@ def _build_audio_structured_fallback(chunk_id: str, chunk_text: str, reason: str
         },
         "context_calibration": {
             "source": "structured_global_context",
-            "content": "未使用上下文消歧",
+            "content": "未使用上下文消歧（无前序分片摘要）",
         },
         "final_summary": final_summary,
     }
@@ -141,6 +141,7 @@ def _llm_audio_chunk_structured(
     chunk_text: str,
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
     timeout_seconds: float,
 ) -> Dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -152,10 +153,12 @@ def _llm_audio_chunk_structured(
     client = OpenAI(api_key=api_key, base_url=base_url)
     model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
     global_context_json = json.dumps(structured_global_context or {}, ensure_ascii=False)
+    previous_summaries_json = json.dumps(previous_chunk_summaries or [], ensure_ascii=False)
     system_prompt = (
         "你是严谨的视频分片音频转录文本分析助手。请严格遵守以下证据规则：\n"
         "1. 一级证据 (observation)：只能描述你在当前 transcript 分片中直接读到的客观内容，例如术语、陈述、数字、口播要点。\n"
-        "2. 二级证据 (context_calibration)：参考 structured_global_context 中的实体和时间线，对一级证据中的模糊称呼、缩写或术语进行纠正。"
+        "2. 二级证据 (context_calibration)：参考 structured_global_context 和 previous_chunk_summaries（仅前 1-2 个相邻分片摘要），"
+        "对一级证据中的模糊称呼、缩写或术语进行纠正。"
         "绝对禁止用大纲来捏造 transcript 中没有出现过的观点、结论或因果关系。\n"
         "3. 如果 transcript 无法提供有效信息，直接在 final_summary 中声明证据不足。\n"
         "输出必须是 JSON 对象，且只包含 observation、context_calibration、final_summary。"
@@ -173,6 +176,7 @@ def _llm_audio_chunk_structured(
                     f"[chunk_id]\n{chunk_id}\n\n"
                     f"[user_prompt]\n{user_prompt}\n\n"
                     f"[structured_global_context]\n{global_context_json}\n\n"
+                    f"[previous_chunk_summaries]\n{previous_summaries_json}\n\n"
                     f"[chunk_transcript]\n{chunk_text}"
                 ),
             },
@@ -198,6 +202,7 @@ def _run_audio_with_retry(
     chunk_text: str,
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], str, int]:
     last_error: Exception | None = None
     for attempt in range(CHUNK_WORKER_MAX_RETRIES + 1):
@@ -207,6 +212,7 @@ def _run_audio_with_retry(
                 chunk_text=chunk_text,
                 user_prompt=user_prompt,
                 structured_global_context=structured_global_context,
+                previous_chunk_summaries=previous_chunk_summaries,
                 timeout_seconds=CHUNK_WORKER_TIMEOUT_SECONDS,
             )
             return structured, "ok", attempt
@@ -225,6 +231,7 @@ def _process_single_chunk_audio(
     transcript_items: List[Dict[str, Any]],
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
 ) -> Tuple[str, Dict[str, Any]]:
     started = time.perf_counter()
     chunk_text = _extract_chunk_text(transcript_items, indexes)
@@ -245,6 +252,7 @@ def _process_single_chunk_audio(
             chunk_text,
             user_prompt,
             structured_global_context,
+            previous_chunk_summaries,
         )
         insights = str(structured_insights.get("final_summary", "")).strip() or f"{CHUNK_DEGRADED_MARKER}:audio:{audio_status}:empty_summary"
 
@@ -317,6 +325,9 @@ def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
     structured_global_context = state.get("structured_global_context", {})
     if not isinstance(structured_global_context, dict):
         structured_global_context = {}
+    previous_chunk_summaries = state.get("previous_chunk_summaries", [])
+    if not isinstance(previous_chunk_summaries, list):
+        previous_chunk_summaries = []
     transcript_items = _build_transcript_items(_load_transcript_data(transcript))
 
     _, merged = _process_single_chunk_audio(
@@ -325,5 +336,6 @@ def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
         transcript_items,
         user_prompt,
         structured_global_context,
+        previous_chunk_summaries,
     )
     return {"chunk_results": [merged]}

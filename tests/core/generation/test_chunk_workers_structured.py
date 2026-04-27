@@ -25,6 +25,7 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
                     "transcript": '{"segments": [{"text": "LangGraph orchestration explained"}]}',
                     "user_prompt": "关注术语",
                     "structured_global_context": {"entities": [{"name": "LangGraph"}]},
+                    "previous_chunk_summaries": [{"chunk_id": "chunk-003", "summary": "上一分片提到 orchestration"}],
                 },
             )
             chunk_audio_worker_node(state)
@@ -38,6 +39,9 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
         self.assertIn("二级证据 (context_calibration)", system_content)
         self.assertIn("绝对禁止用大纲来捏造", system_content)
         self.assertIn("证据不足", system_content)
+
+        user_content = str(messages[1].get("content", ""))
+        self.assertIn("[previous_chunk_summaries]", user_content)
 
     @patch("core.workflow.video_summary.nodes.chunk_audio_analyzer._search_with_cache", return_value="cached")
     @patch("core.workflow.video_summary.nodes.chunk_audio_analyzer._llm_audio_chunk_structured")
@@ -145,6 +149,7 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
                     "keyframes_base_path": "",
                     "user_prompt": "关注动作",
                     "structured_global_context": {"entities": [{"name": "IDE"}]},
+                    "previous_chunk_summaries": [{"chunk_id": "chunk-002", "summary": "上一分片展示终端"}],
                 },
             )
             chunk_vision_worker_node(state)
@@ -158,6 +163,11 @@ class TestChunkWorkersStructuredOutput(unittest.TestCase):
         self.assertIn("二级证据 (context_calibration)", system_content)
         self.assertIn("绝对禁止用大纲来捏造", system_content)
         self.assertIn("证据不足", system_content)
+
+        user_content = messages[1].get("content", [])
+        text_blocks = [str(item.get("text", "")) for item in user_content if isinstance(item, dict) and item.get("type") == "text"]
+        joined = "\n".join(text_blocks)
+        self.assertIn("[previous_chunk_summaries]", joined)
 
     @patch("core.workflow.video_summary.nodes.chunk_vision_analyzer._llm_vision_chunk_structured", side_effect=TimeoutError("request timeout"))
     def test_vision_worker_timeout_degrades_without_blocking(self, _mock_llm):

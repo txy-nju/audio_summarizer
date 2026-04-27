@@ -50,7 +50,7 @@ def _build_vision_structured_fallback(chunk_id: str, frames: List[FramePayload],
         },
         "context_calibration": {
             "source": "structured_global_context",
-            "content": "未使用上下文消歧",
+            "content": "未使用上下文消歧（无前序分片摘要）",
         },
         "final_summary": final_summary,
     }
@@ -94,6 +94,7 @@ def _llm_vision_chunk_structured(
     frames: List[FramePayload],
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
     timeout_seconds: float,
 ) -> Dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -110,6 +111,7 @@ def _llm_vision_chunk_structured(
                 "请分析该视频分片关键帧，并输出 JSON 对象且只包含 observation、context_calibration、final_summary。"
                 f"\\n[user_prompt] {user_prompt}\\n[chunk_id] {chunk_id}"
                 f"\\n[structured_global_context] {json.dumps(structured_global_context or {}, ensure_ascii=False)}"
+                f"\\n[previous_chunk_summaries] {json.dumps(previous_chunk_summaries or [], ensure_ascii=False)}"
             ),
         }
     ]
@@ -131,7 +133,8 @@ def _llm_vision_chunk_structured(
     system_prompt = (
         "你是严谨的视频分片视觉分析助手。请严格遵守以下证据规则：\n"
         "1. 一级证据 (observation)：只能描述你在关键帧图片中直接看到的客观画面、动作或文字。\n"
-        "2. 二级证据 (context_calibration)：参考 structured_global_context 中的实体和时间线，对一级证据中模糊的词汇进行纠正。"
+        "2. 二级证据 (context_calibration)：参考 structured_global_context 和 previous_chunk_summaries（仅前 1-2 个相邻分片摘要），"
+        "对一级证据中模糊的词汇进行纠正。"
         "绝对禁止用大纲来捏造画面中不存在的动作。\n"
         "3. 如果画面无法提供有效信息，直接在 final_summary 中声明证据不足。\n"
         "输出必须是 JSON 对象，且只包含 observation、context_calibration、final_summary。"
@@ -165,6 +168,7 @@ def _run_vision_with_retry(
     frames: List[FramePayload],
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
 ) -> tuple[Dict[str, Any], str, int]:
     last_error: Exception | None = None
     for attempt in range(CHUNK_WORKER_MAX_RETRIES + 1):
@@ -174,6 +178,7 @@ def _run_vision_with_retry(
                 frames=frames,
                 user_prompt=user_prompt,
                 structured_global_context=structured_global_context,
+                previous_chunk_summaries=previous_chunk_summaries,
                 timeout_seconds=CHUNK_WORKER_TIMEOUT_SECONDS,
             )
             return structured, "ok", attempt
@@ -193,6 +198,7 @@ def _process_single_chunk_vision(
     keyframes_base_path: str,
     user_prompt: str,
     structured_global_context: Dict[str, Any],
+    previous_chunk_summaries: List[Dict[str, Any]],
 ) -> tuple[str, ChunkResult]:
     started = time.perf_counter()
 
@@ -222,6 +228,7 @@ def _process_single_chunk_vision(
             selected_frames,
             user_prompt,
             structured_global_context,
+            previous_chunk_summaries,
         )
         insights = str(structured_insights.get("final_summary", "")).strip() or f"{CHUNK_DEGRADED_MARKER}:vision:{vision_status}:empty_summary"
 
@@ -299,6 +306,9 @@ def chunk_vision_worker_node(state: VideoSummaryState) -> dict:
     structured_global_context = state.get("structured_global_context", {})
     if not isinstance(structured_global_context, dict):
         structured_global_context = {}
+    previous_chunk_summaries = state.get("previous_chunk_summaries", [])
+    if not isinstance(previous_chunk_summaries, list):
+        previous_chunk_summaries = []
 
     _, merged = _process_single_chunk_vision(
         chunk_id,
@@ -307,6 +317,7 @@ def chunk_vision_worker_node(state: VideoSummaryState) -> dict:
         keyframes_base_path,
         user_prompt,
         structured_global_context,
+        previous_chunk_summaries,
     )
 
     return {"chunk_results": [merged]}

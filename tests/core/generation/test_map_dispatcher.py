@@ -97,6 +97,7 @@ class TestMapDispatcherNode(unittest.TestCase):
         self.assertEqual(arg0.get("current_chunk", {}).get("chunk_id"), "chunk-001")
         self.assertEqual(arg0.get("user_prompt"), "focus")
         self.assertEqual(arg0.get("structured_global_context", {}).get("entities", []), [{"name": "OpenAI"}])
+        self.assertEqual(arg0.get("previous_chunk_summaries", []), [])
         self.assertNotIn("current_chunk_base_item", arg0)
 
     def test_route_vision_send_tasks_builds_send_payload(self):
@@ -123,7 +124,85 @@ class TestMapDispatcherNode(unittest.TestCase):
         self.assertEqual(arg1.get("current_chunk", {}).get("chunk_id"), "chunk-001")
         self.assertEqual(arg1.get("keyframes_base_path"), "./frames")
         self.assertEqual(arg1.get("structured_global_context", {}).get("timeline_anchors", []), [{"chunk_id": "chunk-000"}])
+        self.assertEqual(arg1.get("previous_chunk_summaries", []), [])
         self.assertNotIn("current_chunk_base_item", arg1)
+
+    def test_map_dispatch_builds_sliding_window_chunk_summary_memory(self):
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [
+                    {"chunk_id": "chunk-000", "start_sec": 0, "end_sec": 10},
+                    {"chunk_id": "chunk-001", "start_sec": 10, "end_sec": 20},
+                    {"chunk_id": "chunk-002", "start_sec": 20, "end_sec": 30},
+                    {"chunk_id": "chunk-003", "start_sec": 30, "end_sec": 40},
+                ],
+                "chunk_results": [
+                    {"chunk_id": "chunk-000", "chunk_summary": "  first summary  "},
+                    {"chunk_id": "chunk-001", "chunk_summary": "second summary"},
+                    {"chunk_id": "chunk-002", "chunk_summary": "third summary"},
+                ],
+            },
+        )
+
+        result = map_dispatch_node(state)
+        self.assertEqual(result.get("active_wave_chunk_ids"), ["chunk-003"])
+
+        memory = result.get("chunk_summary_memory", {})
+        self.assertEqual(memory.get("chunk-000"), "first summary")
+        self.assertEqual(memory.get("chunk-001"), "second summary")
+        self.assertEqual(memory.get("chunk-002"), "third summary")
+
+        previous_map = result.get("previous_chunk_summaries_by_chunk", {})
+        previous_for_target = previous_map.get("chunk-003", [])
+        self.assertEqual([item.get("chunk_id") for item in previous_for_target], ["chunk-001", "chunk-002"])
+
+    def test_route_audio_send_tasks_injects_previous_chunk_summaries(self):
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [
+                    {"chunk_id": "chunk-000", "transcript_segment_indexes": [0]},
+                    {"chunk_id": "chunk-001", "transcript_segment_indexes": [1]},
+                ],
+                "active_wave_chunk_ids": ["chunk-001"],
+                "transcript": '{"segments": [{"text": "x"}]}',
+                "user_prompt": "focus",
+                "structured_global_context": {},
+                "previous_chunk_summaries_by_chunk": {
+                    "chunk-001": [{"chunk_id": "chunk-000", "summary": "prev-summary"}]
+                },
+            },
+        )
+
+        sends = route_audio_send_tasks(state)
+        self.assertEqual(len(sends), 1)
+        arg0 = getattr(sends[0], "arg", {})
+        self.assertEqual(arg0.get("previous_chunk_summaries", []), [{"chunk_id": "chunk-000", "summary": "prev-summary"}])
+
+    def test_route_vision_send_tasks_injects_previous_chunk_summaries(self):
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [
+                    {"chunk_id": "chunk-000", "keyframe_indexes": [0]},
+                    {"chunk_id": "chunk-001", "keyframe_indexes": [1]},
+                ],
+                "active_wave_chunk_ids": ["chunk-001"],
+                "keyframes": [{"time": "00:01", "image": "x"}, {"time": "00:02", "image": "y"}],
+                "keyframes_base_path": "./frames",
+                "user_prompt": "focus",
+                "structured_global_context": {},
+                "previous_chunk_summaries_by_chunk": {
+                    "chunk-001": [{"chunk_id": "chunk-000", "summary": "prev-summary"}]
+                },
+            },
+        )
+
+        sends = route_vision_send_tasks(state)
+        self.assertEqual(len(sends), 1)
+        arg0 = getattr(sends[0], "arg", {})
+        self.assertEqual(arg0.get("previous_chunk_summaries", []), [{"chunk_id": "chunk-000", "summary": "prev-summary"}])
 
     def test_synthesis_barrier_marks_ready_only_when_all_chunks_have_audio_and_vision(self):
         state = cast(
