@@ -81,29 +81,101 @@ def _search_with_cache(query: str) -> str:
     return result
 
 
-def _llm_audio_chunk_summary(chunk_id: str, chunk_text: str, user_prompt: str) -> str:
+def _build_audio_structured_fallback(chunk_id: str, chunk_text: str, reason: str) -> Dict[str, Any]:
+    direct_observation = chunk_text[:300] if chunk_text else "无直接音频证据"
+    final_summary = reason if reason.strip() else (direct_observation[:180] if direct_observation else "证据不足")
+    return {
+        "observation": {
+            "source": "direct_audio",
+            "content": direct_observation,
+        },
+        "context_calibration": {
+            "source": "structured_global_context",
+            "content": "未使用上下文消歧",
+        },
+        "final_summary": final_summary,
+    }
+
+
+def _normalize_structured_payload(payload: Dict[str, Any], fallback_summary: str) -> Dict[str, Any]:
+    observation = payload.get("observation")
+    if not isinstance(observation, dict):
+        observation = {"source": "direct_audio", "content": ""}
+
+    context_calibration = payload.get("context_calibration")
+    if not isinstance(context_calibration, dict):
+        context_calibration = {"source": "structured_global_context", "content": ""}
+
+    final_summary = str(payload.get("final_summary", "")).strip()
+    if not final_summary:
+        final_summary = fallback_summary.strip() or "证据不足"
+
+    return {
+        "observation": {
+            "source": str(observation.get("source", "direct_audio") or "direct_audio"),
+            "content": str(observation.get("content", "") or ""),
+        },
+        "context_calibration": {
+            "source": str(context_calibration.get("source", "structured_global_context") or "structured_global_context"),
+            "content": str(context_calibration.get("content", "") or ""),
+        },
+        "final_summary": final_summary,
+    }
+
+
+def _llm_audio_chunk_structured(
+    chunk_id: str,
+    chunk_text: str,
+    user_prompt: str,
+    structured_global_context: Dict[str, Any],
+) -> Dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     if not api_key:
-        return f"[chunk={chunk_id}] 音频摘要（降级）:\n" + (chunk_text[:500] if chunk_text else "无可用语音证据")
+        fallback = f"[chunk={chunk_id}] 音频摘要（降级）:\n" + (chunk_text[:500] if chunk_text else "无可用语音证据")
+        return _build_audio_structured_fallback(chunk_id, chunk_text, fallback)
 
     client = OpenAI(api_key=api_key, base_url=base_url)
     model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
+    global_context_json = json.dumps(structured_global_context or {}, ensure_ascii=False)
+    system_prompt = (
+        "你是严谨的视频分片音频转录文本分析助手。请严格遵守以下证据规则：\n"
+        "1. 一级证据 (observation)：只能描述你在当前 transcript 分片中直接读到的客观内容，例如术语、陈述、数字、口播要点。\n"
+        "2. 二级证据 (context_calibration)：参考 structured_global_context 中的实体和时间线，对一级证据中的模糊称呼、缩写或术语进行纠正。"
+        "绝对禁止用大纲来捏造 transcript 中没有出现过的观点、结论或因果关系。\n"
+        "3. 如果 transcript 无法提供有效信息，直接在 final_summary 中声明证据不足。\n"
+        "输出必须是 JSON 对象，且只包含 observation、context_calibration、final_summary。"
+    )
     response = client.chat.completions.create(
         model=model_name,
         messages=[
             {
                 "role": "system",
-                "content": "你是分片音频分析助手。请对输入的转录片段做精炼摘要，输出要点与术语解释。",
+                "content": system_prompt,
             },
             {
                 "role": "user",
-                "content": f"[chunk_id]\n{chunk_id}\n\n[user_prompt]\n{user_prompt}\n\n[chunk_transcript]\n{chunk_text}",
+                "content": (
+                    f"[chunk_id]\n{chunk_id}\n\n"
+                    f"[user_prompt]\n{user_prompt}\n\n"
+                    f"[structured_global_context]\n{global_context_json}\n\n"
+                    f"[chunk_transcript]\n{chunk_text}"
+                ),
             },
         ],
         temperature=0.2,
+        response_format={"type": "json_object"},
     )
-    return response.choices[0].message.content or ""
+    raw_content = response.choices[0].message.content or ""
+    try:
+        parsed = json.loads(raw_content)
+    except Exception:
+        return _build_audio_structured_fallback(chunk_id, chunk_text, raw_content)
+    if not isinstance(parsed, dict):
+        return _build_audio_structured_fallback(chunk_id, chunk_text, raw_content)
+
+    fallback_summary = f"[chunk={chunk_id}] 音频分析结果为空，已降级。"
+    return _normalize_structured_payload(parsed, fallback_summary)
 
 
 def _process_single_chunk_audio(
@@ -111,18 +183,23 @@ def _process_single_chunk_audio(
     indexes: List[int],
     transcript_items: List[Dict[str, Any]],
     user_prompt: str,
+    structured_global_context: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any]]:
     started = time.perf_counter()
     chunk_text = _extract_chunk_text(transcript_items, indexes)
 
     if not chunk_text:
-        insights = f"[chunk={chunk_id}] 无可用 transcript 分片证据。"
+        structured_insights = _build_audio_structured_fallback(chunk_id, chunk_text, f"[chunk={chunk_id}] 无可用 transcript 分片证据。")
+        insights = structured_insights["final_summary"]
         searches: List[Dict[str, str]] = []
     else:
         try:
-            insights = _llm_audio_chunk_summary(chunk_id, chunk_text, user_prompt)
+            structured_insights = _llm_audio_chunk_structured(chunk_id, chunk_text, user_prompt, structured_global_context)
+            insights = str(structured_insights.get("final_summary", "")).strip() or f"[chunk={chunk_id}] 证据不足。"
         except Exception as exc:
-            insights = f"[chunk={chunk_id}] 音频分析降级：{str(exc)}\n\n{chunk_text[:400]}"
+            fallback = f"[chunk={chunk_id}] 音频分析降级：{str(exc)}\n\n{chunk_text[:400]}"
+            structured_insights = _build_audio_structured_fallback(chunk_id, chunk_text, fallback)
+            insights = structured_insights["final_summary"]
 
         searches = []
         for query in _candidate_queries(chunk_text, max(0, CHUNK_MAX_TOOL_CALLS)):
@@ -132,6 +209,7 @@ def _process_single_chunk_audio(
 
     delta = {
         "chunk_id": chunk_id,
+        "audio_structured_analysis": structured_insights,
         "audio_insights": insights,
         "evidence_refs": {
             "transcript_segment_indexes": indexes,
@@ -180,6 +258,9 @@ def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
 
     transcript = str(state.get("transcript", ""))
     user_prompt = str(state.get("user_prompt", ""))
+    structured_global_context = state.get("structured_global_context", {})
+    if not isinstance(structured_global_context, dict):
+        structured_global_context = {}
     transcript_items = _build_transcript_items(_load_transcript_data(transcript))
 
     _, merged = _process_single_chunk_audio(
@@ -187,5 +268,6 @@ def chunk_audio_worker_node(state: VideoSummaryState) -> dict:
         indexes,
         transcript_items,
         user_prompt,
+        structured_global_context,
     )
     return {"chunk_results": [merged]}

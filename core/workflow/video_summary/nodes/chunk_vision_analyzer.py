@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import threading
@@ -32,17 +33,70 @@ def _search_with_cache(query: str) -> str:
     return result
 
 
-def _llm_vision_chunk_summary(chunk_id: str, frames: List[FramePayload], user_prompt: str) -> str:
+def _build_vision_structured_fallback(chunk_id: str, frames: List[FramePayload], reason: str) -> Dict[str, Any]:
+    frame_times = [str(frame.get("time", "未知")) for frame in frames[:6]]
+    direct_observation = f"命中 {len(frames)} 帧，时间点: {frame_times}" if frames else "无直接视觉证据"
+    final_summary = reason if reason.strip() else direct_observation
+    return {
+        "observation": {
+            "source": "direct_vision",
+            "content": direct_observation,
+        },
+        "context_calibration": {
+            "source": "structured_global_context",
+            "content": "未使用上下文消歧",
+        },
+        "final_summary": final_summary,
+    }
+
+
+def _normalize_structured_payload(payload: Dict[str, Any], fallback_summary: str) -> Dict[str, Any]:
+    observation = payload.get("observation")
+    if not isinstance(observation, dict):
+        observation = {"source": "direct_vision", "content": ""}
+
+    context_calibration = payload.get("context_calibration")
+    if not isinstance(context_calibration, dict):
+        context_calibration = {"source": "structured_global_context", "content": ""}
+
+    final_summary = str(payload.get("final_summary", "")).strip()
+    if not final_summary:
+        final_summary = fallback_summary.strip() or "证据不足"
+
+    return {
+        "observation": {
+            "source": str(observation.get("source", "direct_vision") or "direct_vision"),
+            "content": str(observation.get("content", "") or ""),
+        },
+        "context_calibration": {
+            "source": str(context_calibration.get("source", "structured_global_context") or "structured_global_context"),
+            "content": str(context_calibration.get("content", "") or ""),
+        },
+        "final_summary": final_summary,
+    }
+
+
+def _llm_vision_chunk_structured(
+    chunk_id: str,
+    frames: List[FramePayload],
+    user_prompt: str,
+    structured_global_context: Dict[str, Any],
+) -> Dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     if not api_key:
         times = [str(frame.get("time", "未知")) for frame in frames[:8]]
-        return f"[chunk={chunk_id}] 视觉摘要（降级）：命中 {len(frames)} 帧，时间点 {times}"
+        fallback = f"[chunk={chunk_id}] 视觉摘要（降级）：命中 {len(frames)} 帧，时间点 {times}"
+        return _build_vision_structured_fallback(chunk_id, frames, fallback)
 
     content: List[Dict[str, Any]] = [
         {
             "type": "text",
-            "text": f"请分析该视频分片关键帧并总结主要画面变化。\\n[user_prompt] {user_prompt}\\n[chunk_id] {chunk_id}",
+            "text": (
+                "请分析该视频分片关键帧，并输出 JSON 对象且只包含 observation、context_calibration、final_summary。"
+                f"\\n[user_prompt] {user_prompt}\\n[chunk_id] {chunk_id}"
+                f"\\n[structured_global_context] {json.dumps(structured_global_context or {}, ensure_ascii=False)}"
+            ),
         }
     ]
 
@@ -60,8 +114,16 @@ def _llm_vision_chunk_summary(chunk_id: str, frames: List[FramePayload], user_pr
 
     client = OpenAI(api_key=api_key, base_url=base_url)
     model_name = os.getenv("OPENAI_VISION_MODEL_NAME", os.getenv("OPENAI_MODEL_NAME", "gpt-4o"))
+    system_prompt = (
+        "你是严谨的视频分片视觉分析助手。请严格遵守以下证据规则：\n"
+        "1. 一级证据 (observation)：只能描述你在关键帧图片中直接看到的客观画面、动作或文字。\n"
+        "2. 二级证据 (context_calibration)：参考 structured_global_context 中的实体和时间线，对一级证据中模糊的词汇进行纠正。"
+        "绝对禁止用大纲来捏造画面中不存在的动作。\n"
+        "3. 如果画面无法提供有效信息，直接在 final_summary 中声明证据不足。\n"
+        "输出必须是 JSON 对象，且只包含 observation、context_calibration、final_summary。"
+    )
     messages_payload: Any = [
-        {"role": "system", "content": "你是分片视觉分析助手，请输出关键画面、动作和图表要点。"},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": content},
     ]
     response = client.chat.completions.create(
@@ -69,8 +131,18 @@ def _llm_vision_chunk_summary(chunk_id: str, frames: List[FramePayload], user_pr
         messages=messages_payload,
         temperature=0.2,
         max_tokens=1024,
+        response_format={"type": "json_object"},
     )
-    return response.choices[0].message.content or ""
+    raw_content = response.choices[0].message.content or ""
+    try:
+        parsed = json.loads(raw_content)
+    except Exception:
+        return _build_vision_structured_fallback(chunk_id, frames, raw_content)
+    if not isinstance(parsed, dict):
+        return _build_vision_structured_fallback(chunk_id, frames, raw_content)
+
+    fallback_summary = f"[chunk={chunk_id}] 视觉分析结果为空，已降级。"
+    return _normalize_structured_payload(parsed, fallback_summary)
 
 
 def _process_single_chunk_vision(
@@ -79,6 +151,7 @@ def _process_single_chunk_vision(
     keyframes: List[FramePayload],
     keyframes_base_path: str,
     user_prompt: str,
+    structured_global_context: Dict[str, Any],
 ) -> tuple[str, ChunkResult]:
     started = time.perf_counter()
 
@@ -93,13 +166,17 @@ def _process_single_chunk_vision(
             selected_frames.append(normalized_frame)
 
     if not selected_frames:
-        insights = f"[chunk={chunk_id}] 无可用关键帧证据。"
+        structured_insights = _build_vision_structured_fallback(chunk_id, selected_frames, f"[chunk={chunk_id}] 无可用关键帧证据。")
+        insights = structured_insights["final_summary"]
         searches: List[Dict[str, str]] = []
     else:
         try:
-            insights = _llm_vision_chunk_summary(chunk_id, selected_frames, user_prompt)
+            structured_insights = _llm_vision_chunk_structured(chunk_id, selected_frames, user_prompt, structured_global_context)
+            insights = str(structured_insights.get("final_summary", "")).strip() or f"[chunk={chunk_id}] 证据不足。"
         except Exception as exc:
-            insights = f"[chunk={chunk_id}] 视觉分析降级：{str(exc)}"
+            fallback = f"[chunk={chunk_id}] 视觉分析降级：{str(exc)}"
+            structured_insights = _build_vision_structured_fallback(chunk_id, selected_frames, fallback)
+            insights = structured_insights["final_summary"]
 
         searches = []
         for frame in selected_frames[: max(0, CHUNK_MAX_TOOL_CALLS)]:
@@ -111,6 +188,7 @@ def _process_single_chunk_vision(
 
     delta: ChunkResult = {
         "chunk_id": chunk_id,
+        "vision_structured_analysis": structured_insights,
         "vision_insights": insights,
         "evidence_refs": {
             "keyframe_indexes": frame_indexes,
@@ -162,6 +240,9 @@ def chunk_vision_worker_node(state: VideoSummaryState) -> dict:
         keyframes = []
     keyframes_base_path = str(state.get("keyframes_base_path", ""))
     user_prompt = str(state.get("user_prompt", ""))
+    structured_global_context = state.get("structured_global_context", {})
+    if not isinstance(structured_global_context, dict):
+        structured_global_context = {}
 
     _, merged = _process_single_chunk_vision(
         chunk_id,
@@ -169,6 +250,7 @@ def chunk_vision_worker_node(state: VideoSummaryState) -> dict:
         keyframes,
         keyframes_base_path,
         user_prompt,
+        structured_global_context,
     )
 
     return {"chunk_results": [merged]}
