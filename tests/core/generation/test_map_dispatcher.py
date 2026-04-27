@@ -113,7 +113,7 @@ class TestMapDispatcherNode(unittest.TestCase):
                 "user_prompt": "focus",
                 "structured_global_context": {"timeline_anchors": [{"chunk_id": "chunk-000"}]},
                 "active_wave_chunk_ids": ["chunk-001"],
-                "chunk_results": [{"chunk_id": "chunk-001", "vision_insights": "old-v"}],
+                "chunk_results": [{"chunk_id": "chunk-000", "vision_insights": "old-v"}],
             },
         )
         sends = route_vision_send_tasks(state)
@@ -180,6 +180,22 @@ class TestMapDispatcherNode(unittest.TestCase):
         arg0 = getattr(sends[0], "arg", {})
         self.assertEqual(arg0.get("previous_chunk_summaries", []), [{"chunk_id": "chunk-000", "summary": "prev-summary"}])
 
+    def test_route_audio_send_tasks_skips_when_audio_already_ready(self):
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [{"chunk_id": "chunk-001", "transcript_segment_indexes": [1]}],
+                "active_wave_chunk_ids": ["chunk-001"],
+                "transcript": '{"segments": [{"text": "x"}]}',
+                "user_prompt": "focus",
+                "structured_global_context": {},
+                "chunk_results": [{"chunk_id": "chunk-001", "audio_insights": "already-done"}],
+            },
+        )
+
+        sends = route_audio_send_tasks(state)
+        self.assertEqual(sends, [])
+
     def test_route_vision_send_tasks_injects_previous_chunk_summaries(self):
         state = cast(
             VideoSummaryState,
@@ -203,6 +219,23 @@ class TestMapDispatcherNode(unittest.TestCase):
         self.assertEqual(len(sends), 1)
         arg0 = getattr(sends[0], "arg", {})
         self.assertEqual(arg0.get("previous_chunk_summaries", []), [{"chunk_id": "chunk-000", "summary": "prev-summary"}])
+
+    def test_route_vision_send_tasks_skips_when_vision_already_ready(self):
+        state = cast(
+            VideoSummaryState,
+            {
+                "chunk_plan": [{"chunk_id": "chunk-001", "keyframe_indexes": [1]}],
+                "active_wave_chunk_ids": ["chunk-001"],
+                "keyframes": [{"time": "00:01", "image": "x"}],
+                "keyframes_base_path": "./frames",
+                "user_prompt": "focus",
+                "structured_global_context": {},
+                "chunk_results": [{"chunk_id": "chunk-001", "vision_insights": "already-done"}],
+            },
+        )
+
+        sends = route_vision_send_tasks(state)
+        self.assertEqual(sends, [])
 
     def test_synthesis_barrier_marks_ready_only_when_all_chunks_have_audio_and_vision(self):
         state = cast(

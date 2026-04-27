@@ -265,6 +265,10 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
     previous_chunk_summaries_by_chunk = state.get("previous_chunk_summaries_by_chunk", {})
     if not isinstance(previous_chunk_summaries_by_chunk, dict):
         previous_chunk_summaries_by_chunk = {}
+    chunk_results = state.get("chunk_results", [])
+    if not isinstance(chunk_results, list):
+        chunk_results = []
+    result_map = _build_result_map(chunk_results)
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -272,6 +276,9 @@ def route_audio_send_tasks(state: VideoSummaryState) -> List[Send]:
         if not chunk_id:
             continue
         if active_wave_set and chunk_id not in active_wave_set:
+            continue
+        # 避免重复派发：该分片音频模态已 ready（含终结降级）则跳过。
+        if _modality_ready(result_map.get(chunk_id, {}), "audio"):
             continue
 
         sends.append(
@@ -311,6 +318,10 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
     previous_chunk_summaries_by_chunk = state.get("previous_chunk_summaries_by_chunk", {})
     if not isinstance(previous_chunk_summaries_by_chunk, dict):
         previous_chunk_summaries_by_chunk = {}
+    chunk_results = state.get("chunk_results", [])
+    if not isinstance(chunk_results, list):
+        chunk_results = []
+    result_map = _build_result_map(chunk_results)
     for chunk in chunk_plan:
         if not isinstance(chunk, dict):
             continue
@@ -318,6 +329,9 @@ def route_vision_send_tasks(state: VideoSummaryState) -> List[Send]:
         if not chunk_id:
             continue
         if active_wave_set and chunk_id not in active_wave_set:
+            continue
+        # 避免重复派发：该分片视觉模态已 ready（含终结降级）则跳过。
+        if _modality_ready(result_map.get(chunk_id, {}), "vision"):
             continue
 
         sends.append(
